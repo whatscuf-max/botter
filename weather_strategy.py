@@ -57,8 +57,8 @@ AIRPORTS = {
     "toronto":       {"lat": 43.6772,  "lon": -79.6306,  "noaa": False, "station": "Pearson Intl (CYYZ)"},
 }
 
-MET_OFFICE_API_KEY = os.environ.get("MET_OFFICE_API_KEY", "")
-WEATHERAPI_KEY = os.environ.get("WEATHERAPI_KEY", "")
+MET_OFFICE_API_KEY = "eyJ4NXQjUzI1NiI6Ik5XVTVZakUxTkRjeVl6a3hZbUl4TkdSaFpqSmpOV1l6T1dGaE9XWXpNMk0yTWpRek5USm1OVEE0TXpOaU9EaG1NVFJqWVdNellXUm1ZalUyTTJJeVpBPT0iLCJraWQiOiJnYXRld2F5X2NlcnRpZmljYXRlX2FsaWFzIiwidHlwIjoiSldUIiwiYWxnIjoiUlMyNTYifQ==.eyJzdWIiOiJ3aGF0LnNjdWZAZ21haWwuY29tQGNhcmJvbi5zdXBlciIsImFwcGxpY2F0aW9uIjp7Im93bmVyIjoid2hhdC5zY3VmQGdtYWlsLmNvbSIsInRpZXJRdW90YVR5cGUiOm51bGwsInRpZXIiOiJVbmxpbWl0ZWQiLCJuYW1lIjoic2l0ZV9zcGVjaWZpYy05MDY3YzMwYy1kMTljLTQ4NzYtODc0OC01MTEyNTU4NThiZGYiLCJpZCI6NDE2NjUsInV1aWQiOiI1Zjg5MjI4Yy0xM2U3LTRkMzAtYTAyOC04NTYzYWM4OGU5ZGUifSwiaXNzIjoiaHR0cHM6XC9cL2FwaS1tYW5hZ2VyLmFwaS1tYW5hZ2VtZW50Lm1ldG9mZmljZS5jbG91ZDo0NDNcL29hdXRoMlwvdG9rZW4iLCJ0aWVySW5mbyI6eyJ3ZGhfc2l0ZV9zcGVjaWZpY19mcmVlIjp7InRpZXJRdW90YVR5cGUiOiJyZXF1ZXN0Q291bnQiLCJncmFwaFFMTWF4Q29tcGxleGl0eSI6MCwiZ3JhcGhRTE1heERlcHRoIjowLCJzdG9wT25RdW90YVJlYWNoIjp0cnVlLCJzcGlrZUFycmVzdExpbWl0IjowLCJzcGlrZUFycmVzdFVuaXQiOiJzZWMifX0sImtleXR5cGUiOiJQUk9EVUNUSU9OIiwic3Vic2NyaWJlZEFQSXMiOlt7InN1YnNjcmliZXJUZW5hbnREb21haW4iOiJjYXJib24uc3VwZXIiLCJuYW1lIjoiU2l0ZVNwZWNpZmljRm9yZWNhc3QiLCJjb250ZXh0IjoiXC9zaXRlc3BlY2lmaWNcL3YwIiwicHVibGlzaGVyIjoiSmFndWFyX0NJIiwidmVyc2lvbiI6InYwIiwic3Vic2NyaXB0aW9uVGllciI6IndkaF9zaXRlX3NwZWNpZmljX2ZyZWUifV0sInRva2VuX3R5cGUiOiJhcGlLZXkiLCJpYXQiOjE3NzMxNzMyNDIsImp0aSI6IjVmMjg1NWZlLTM1ZWMtNDQxZS1hMzhjLWNjZGE3MjQwYjI0ZiJ9.I3tFb4mfUVxCnPVTCAMJ_VgUx99SXIRVxY_2UbWEU9eH9IRvBXzjUOv8uC9hVVSw3LmzS4aMLnM6oiB2lJHSHxPGyFB3ybzcBYoa_wIFrt0H5UK_Br5IWGAkB1aG2xvVCburIu-QCHPT5PlpghfDb0MreUjXxB9fZT6HenvHUoHgZ3MZnuR499Y39Y1bdmvhtnf8ypS6wrf5oTuwIPW5rsQmK8QfpTscImt8eqYOjI1FqYJwuWxIdpcdKRg0tqRq0gTjQzHNCt6kGfDqtLtnblrjL0hXonG8DR5wmShr5oim7mAyGi7dENBL9vgkgS3zu4E4m1y7ZXN22QQt2hbD1A=="
+WEATHERAPI_KEY = "416de86549c44e40918200751261003"
 
 
 @dataclass
@@ -443,7 +443,7 @@ class WeatherStrategy:
         if not parsed:
             return signals
 
-        # Fetch forecasts -- one call per city, passing the correct target_date
+        # Fetch forecasts — one call per city, passing the correct target_date
         cities_needed = set(p.city for _, p in parsed)
         forecasts: Dict[str, dict] = {}
         for city in cities_needed:
@@ -515,7 +515,7 @@ class WeatherStrategy:
 
             conviction = min(conviction + boost, 0.90)
 
-            # Time-decay cap -- NWP skill degrades beyond 36-48h
+            # FIX 3: Time-decay cap — NWP skill degrades beyond 36-48h
             if p.hours_to_resolve > 48:
                 conviction = min(conviction, 0.70)
                 logger.debug(f"TIME-DECAY: {mkt.question[:45]} | {p.hours_to_resolve:.0f}h -> cap 0.70")
@@ -538,7 +538,7 @@ class WeatherStrategy:
                 if price > 0.75 or price < 0.03:
                     continue
 
-            # Strict edge + EV filters
+            # FIX 4: Strict edge + EV filters
             edge = conviction - price
             if edge < 0.12:
                 logger.debug(f"LOW EDGE {mkt.question[:45]}: {edge:.2%} < 12%")
@@ -551,7 +551,7 @@ class WeatherStrategy:
                 logger.debug(f"LOW EV {mkt.question[:45]}: EV={ev:.2%} < 10%")
                 continue
 
-            # Quarter-Kelly sizing
+            # FIX 6: Quarter-Kelly sizing
             # Full Kelly: f* = edge / (1 - conviction)
             # Quarter Kelly: 0.25 * f* (safety multiplier)
             kelly_denom = max(1.0 - conviction, 0.01)
