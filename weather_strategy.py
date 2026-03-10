@@ -18,6 +18,7 @@ import asyncio
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -81,7 +82,7 @@ def parse_weather_question(question: str) -> Optional[ParsedWeatherMarket]:
         return None
 
     unit = "F"
-    if any(x in q for x in ["°c", "ºc"]) or re.search(r'be\s+\d+°?c', q) or \
+    if any(x in q for x in ["\u00b0c", "\u00bac"]) or re.search(r'be\s+\d+\u00b0?c', q) or \
        re.search(r'\d+\s*c\s+on', q) or re.search(r'\d+\s*c\s*\?', q):
         unit = "C"
 
@@ -92,15 +93,15 @@ def parse_weather_question(question: str) -> Optional[ParsedWeatherMarket]:
     if m:
         return ParsedWeatherMarket(city, float(m.group(1)), float(m.group(2)),
                                     unit, False, False, question)
-    m = re.search(r'be\s+(\d+)\s*°?[FCfc]?\s+on', q)
+    m = re.search(r'be\s+(\d+)\s*\u00b0?[FCfc]?\s+on', q)
     if m:
         return ParsedWeatherMarket(city, float(m.group(1)), float(m.group(1)),
                                     unit, is_or_below, is_or_higher, question)
-    m = re.search(r'be\s+(\d+)\s*[°º][FCfc]', q)
+    m = re.search(r'be\s+(\d+)\s*[\u00b0\u00ba][FCfc]', q)
     if m:
         return ParsedWeatherMarket(city, float(m.group(1)), float(m.group(1)),
                                     unit, is_or_below, is_or_higher, question)
-    m = re.search(r'(\d+)\s*°?[FCfc]\s+or\s+(higher|below|above|lower)', q)
+    m = re.search(r'(\d+)\s*\u00b0?[FCfc]\s+or\s+(higher|below|above|lower)', q)
     if m:
         return ParsedWeatherMarket(city, float(m.group(1)), float(m.group(1)),
                                     unit, is_or_below, is_or_higher, question)
@@ -158,10 +159,17 @@ class ForecastFetcher:
             diff = abs(temps_c[0] - temps_c[1])
             boost = 0.10 if diff <= 1.5 else (0.05 if diff <= 3.0 else 0.0)
 
+        # Fix 2+3: Try to get observed actual high/low with full precision
+        observed = None
+        if info.get("noaa"):
+            station_id = info["station"].split("(")[-1].rstrip(")")  # extract e.g. "KSEA" from "Seattle-Tacoma Intl (KSEA)"
+            observed = await self._fetch_noaa_observed(station_id)
+
         result = {
             "temp_c": round(avg_c, 1), "temp_f": round(avg_f, 1),
             "sources": sources, "confidence_boost": boost,
             "station": info["station"], "individual_c": temps_c,
+            "observed": observed,
         }
         self._forecast_cache[city] = (now, result)
         logger.info(
@@ -230,6 +238,29 @@ class ForecastFetcher:
         return None
 
 
+    async def _fetch_noaa_observed(self, station_id: str) -> Optional[dict]:
+        """Fetch observed actual high/low temps from NOAA current conditions page."""
+        try:
+            url = f"https://tgftp.nws.noaa.gov/weather/current/{station_id}.html"
+            r = await self._client.get(url)
+            r.raise_for_status()
+            text = r.text
+            max_f = max_c = min_f = min_c = None
+            m = re.search(r'Max Temperature\s+([\d.]+)\s*F\s*\(\s*([\d.]+)\s*C\)', text)
+            if m:
+                max_f = float(m.group(1))
+                max_c = float(m.group(2))
+            m = re.search(r'Min Temperature\s+([\d.]+)\s*F\s*\(\s*([\d.]+)\s*C\)', text)
+            if m:
+                min_f = float(m.group(1))
+                min_c = float(m.group(2))
+            if max_f is not None and min_f is not None:
+                return {"max_f": max_f, "min_f": min_f, "max_c": max_c, "min_c": min_c}
+        except Exception as e:
+            logger.debug(f"NOAA observed err ({station_id}): {e}")
+        return None
+
+
 class WeatherStrategy:
     """
     VALUE-BASED trading:
@@ -270,11 +301,26 @@ class WeatherStrategy:
         logger.info(f"Forecasts: {len(forecasts)}/{len(cities_needed)} cities")
 
         for mkt, p in parsed:
+            # Fix 1: Skip markets resolving today or earlier (already in progress / resolved)
+            if mkt.end_date:
+                try:
+                    ed = datetime.fromisoformat(mkt.end_date.replace("Z", "+00:00"))
+                    today_utc = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                    if ed <= today_utc:
+                        logger.debug(f"SKIP {mkt.question[:50]}: end_date {mkt.end_date} is today or past")
+                        continue
+                except Exception:
+                    pass
             fc = forecasts.get(p.city)
             if not fc:
                 continue
 
-            forecast_temp = fc["temp_f"] if p.unit == "F" else fc["temp_c"]
+            # Fix 2+3: Use observed actual high if available (more accurate, full precision)
+            observed = fc.get("observed")
+            if observed:
+                forecast_temp = observed["max_f"] if p.unit == "F" else observed["max_c"]
+            else:
+                forecast_temp = fc["temp_f"] if p.unit == "F" else fc["temp_c"]
             boost = fc.get("confidence_boost", 0.0)
             range_mid = (p.temp_low + p.temp_high) / 2
             distance = abs(forecast_temp - range_mid)
@@ -363,10 +409,12 @@ class WeatherStrategy:
                 token_id=token_id, outcome=outcome, price=price,
                 size=size, confidence=conviction,
                 reasoning=(
-                    f"WX: Forecast={forecast_temp:.0f}{p.unit} | "
-                    f"Range={p.temp_low:.0f}-{p.temp_high:.0f}{p.unit} | "
-                    f"Dist={distance:.0f} | Edge={edge:.0%} | "
-                    f"{'+'.join(fc['sources'])} | {station} -> {outcome}"
+                    (f"WX[OBS]: Observed max={forecast_temp:.1f}{p.unit} | "
+                     if observed else
+                     f"WX[FCST]: Forecast={forecast_temp:.0f}{p.unit} | ")
+                    + f"Range={p.temp_low:.0f}-{p.temp_high:.0f}{p.unit} | "
+                    + f"Dist={distance:.0f} | Edge={edge:.0%} | "
+                    + f"{'+'.join(fc['sources'])} | {station} -> {outcome}"
                 ),
             )
             signals.append(sig)
