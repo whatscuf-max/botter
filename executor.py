@@ -66,10 +66,12 @@ class Position:
     @property
     def age_str(self):
         mins = (time.time() - self.opened_at) / 60
-        if mins < 60: return f"{mins:.0f}m"
+        if mins < 60:
+            return f"{mins:.0f}m"
         hrs = mins / 60
-        if hrs < 24: return f"{hrs:.1f}h"
-        return f"{hrs/24:.1f}d"
+        if hrs < 24:
+            return f"{hrs:.1f}h"
+        return f"{hrs / 24:.1f}d"
 
     def unrealized_pnl(self, cp):
         return (cp - self.entry_price) * self.size
@@ -97,7 +99,9 @@ class TradeExecutor:
 
     @property
     def open_positions(self):
-        return sorted([p for p in self.positions.values() if p.is_open], key=lambda p: p.id)
+        return sorted(
+            [p for p in self.positions.values() if p.is_open], key=lambda p: p.id
+        )
 
     @property
     def total_invested(self):
@@ -113,8 +117,6 @@ class TradeExecutor:
 
     def update_prices(self, prices):
         self._current_prices.update(prices)
-
-    # ─── Sell commands ────────────────────────────────────────
 
     def sell_position(self, pos_id: int) -> str:
         for tid, pos in self.positions.items():
@@ -146,8 +148,6 @@ class TradeExecutor:
             lines.append(f"  SOLD #{pos.id}: {pos.question[:50]} | {pnl_s}")
         return "\n".join(lines) + f"\n  Balance: ${self.balance:.2f}"
 
-    # ─── Trade Execution ──────────────────────────────────────
-
     async def execute_signal(self, signal: TradeSignal) -> Optional[Order]:
         if not self._validate(signal):
             return None
@@ -176,38 +176,61 @@ class TradeExecutor:
         order.fill_price = fp
         order.fill_size = shares
         order.filled_at = time.time()
-        self._paper_balance -= (cost + cost * 0.001)
+        self._paper_balance -= cost + cost * 0.001
 
         pid = self._next_id
         self._next_id += 1
         pos = Position(
-            id=pid, market_condition_id=sig.market.condition_id,
-            question=sig.market.question, token_id=sig.token_id,
-            outcome=sig.outcome, entry_price=fp, size=shares, cost=cost,
-            signal_type=sig.signal_type.value, reasoning=sig.reasoning,
+            id=pid,
+            market_condition_id=sig.market.condition_id,
+            question=sig.market.question,
+            token_id=sig.token_id,
+            outcome=sig.outcome,
+            entry_price=fp,
+            size=shares,
+            cost=cost,
+            signal_type=sig.signal_type.value,
+            reasoning=sig.reasoning,
             confidence=sig.confidence,
         )
-        # Parse weather data from reasoning
-        tm = re.search(r'Forecast=(\d+)', sig.reasoning)
-        if tm: pos.forecast_temp = float(tm.group(1))
+
+        # FIX 5: Parse weather temp from reasoning — handles both FCST and OBS formats
+        # Matches: "Forecast=46F", "Forecast=46.9F", "Forecast=46C", "Forecast=46.9C"
+        tm = re.search(r'Forecast=([\d.]+)[FC]', sig.reasoning)
+        if tm:
+            pos.forecast_temp = float(tm.group(1))
+
         rm = re.search(r'Range=(\d+)-(\d+)', sig.reasoning)
-        if rm: pos.temp_range_low, pos.temp_range_high = float(rm.group(1)), float(rm.group(2))
+        if rm:
+            pos.temp_range_low = float(rm.group(1))
+            pos.temp_range_high = float(rm.group(2))
+
         um = re.search(r'Range=\d+-\d+([FC])', sig.reasoning)
-        if um: pos.forecast_unit = um.group(1)
-        for c in ["new york", "london", "paris", "seoul", "ankara", "lucknow",
-                   "wellington", "munich", "sao paulo", "buenos aires", "toronto",
-                   "miami", "atlanta", "chicago", "seattle", "dallas"]:
+        if um:
+            pos.forecast_unit = um.group(1)
+
+        for c in [
+            "new york", "london", "paris", "seoul", "ankara", "lucknow",
+            "wellington", "munich", "sao paulo", "buenos aires", "toronto",
+            "miami", "atlanta", "chicago", "seattle", "dallas",
+        ]:
             if c in sig.market.question.lower():
                 pos.city = c.title()
                 break
 
         self.positions[sig.token_id] = pos
         self.trade_history.append({
-            "order_id": order.order_id, "signal_type": sig.signal_type.value,
-            "market": pos.question, "outcome": pos.outcome,
-            "price": fp, "shares": shares, "cost": cost,
-            "reasoning": pos.reasoning, "confidence": pos.confidence,
-            "timestamp": time.time(), "balance_after": self.balance,
+            "order_id": order.order_id,
+            "signal_type": sig.signal_type.value,
+            "market": pos.question,
+            "outcome": pos.outcome,
+            "price": fp,
+            "shares": shares,
+            "cost": cost,
+            "reasoning": pos.reasoning,
+            "confidence": pos.confidence,
+            "timestamp": time.time(),
+            "balance_after": self.balance,
         })
         logger.info(f"FILL #{pid}: {sig.outcome} {shares:.0f}sh @ ${fp:.4f} = ${cost:.2f}")
         return order
@@ -218,8 +241,10 @@ class TradeExecutor:
             from py_clob_client.order_builder.constants import BUY, SELL
             shares = sig.size / sig.price if sig.price > 0 else 0
             resp = self.clob_client.create_and_post_order({
-                "token_id": sig.token_id, "price": sig.price,
-                "size": shares, "side": BUY if sig.side == Side.BUY else SELL,
+                "token_id": sig.token_id,
+                "price": sig.price,
+                "size": shares,
+                "side": BUY if sig.side == Side.BUY else SELL,
             })
             if resp and resp.get("success"):
                 order.status = OrderStatus.FILLED
@@ -227,12 +252,21 @@ class TradeExecutor:
                 order.fill_size = shares
                 order.filled_at = time.time()
                 self._paper_balance -= shares * sig.price
-                pid = self._next_id; self._next_id += 1
-                pos = Position(id=pid, market_condition_id=sig.market.condition_id,
-                    question=sig.market.question, token_id=sig.token_id,
-                    outcome=sig.outcome, entry_price=sig.price, size=shares,
-                    cost=shares*sig.price, signal_type=sig.signal_type.value,
-                    reasoning=sig.reasoning, confidence=sig.confidence)
+                pid = self._next_id
+                self._next_id += 1
+                pos = Position(
+                    id=pid,
+                    market_condition_id=sig.market.condition_id,
+                    question=sig.market.question,
+                    token_id=sig.token_id,
+                    outcome=sig.outcome,
+                    entry_price=sig.price,
+                    size=shares,
+                    cost=shares * sig.price,
+                    signal_type=sig.signal_type.value,
+                    reasoning=sig.reasoning,
+                    confidence=sig.confidence,
+                )
                 self.positions[sig.token_id] = pos
             else:
                 order.status = OrderStatus.FAILED
@@ -241,17 +275,20 @@ class TradeExecutor:
             order.error = str(e)
         return order
 
-    async def evaluate_positions_with_data(self, current_prices, crypto_direction,
-                                            crypto_confidence, weather_forecasts):
+    async def evaluate_positions_with_data(
+        self, current_prices, crypto_direction, crypto_confidence, weather_forecasts
+    ):
         closed = []
         for tid, pos in list(self.positions.items()):
+            # FIX 5: pos.forecast_temp == 0 means temp was never parsed — skip non-weather
             if not pos.is_open or pos.forecast_temp == 0:
                 continue
             city = None
             q = pos.question.lower()
             for c in weather_forecasts:
                 if c.lower() in q:
-                    city = c; break
+                    city = c
+                    break
             if not city or city not in weather_forecasts:
                 continue
             fc = weather_forecasts[city]
@@ -268,11 +305,11 @@ class TradeExecutor:
                 new_dist = abs(new_temp - range_mid)
                 if new_dist > 4.0:
                     should_exit = True
-                    reason = f"Forecast {pos.forecast_temp:.0f}->{new_temp:.0f} (now {new_dist:.0f} from range)"
+                    reason = f"Forecast {pos.forecast_temp:.1f}->{new_temp:.1f} (now {new_dist:.1f} from range)"
             elif pos.outcome == "No":
                 if pos.temp_range_low <= new_temp <= pos.temp_range_high:
                     should_exit = True
-                    reason = f"Forecast {pos.forecast_temp:.0f}->{new_temp:.0f} (now IN range)"
+                    reason = f"Forecast {pos.forecast_temp:.1f}->{new_temp:.1f} (now IN range)"
             if should_exit:
                 cp = current_prices.get(tid, pos.entry_price)
                 pos.exit_price = cp
@@ -295,28 +332,18 @@ class TradeExecutor:
 
     def _record_close(self, pos):
         self.trade_history.append({
-            "type": "close", "market": pos.question, "outcome": pos.outcome,
-            "exit_reason": pos.exit_reason, "pnl": pos.pnl,
-            "timestamp": time.time(), "balance_after": self.balance,
+            "type": "close",
+            "market": pos.question,
+            "outcome": pos.outcome,
+            "exit_reason": pos.exit_reason,
+            "pnl": pos.pnl,
+            "entry": pos.entry_price,
+            "exit": pos.exit_price,
+            "timestamp": time.time(),
+            "balance_after": self.balance,
         })
-
-    def get_summary(self):
-        closes = [t for t in self.trade_history if t.get("type") == "close"]
-        wins = sum(1 for t in closes if t.get("pnl", 0) > 0)
-        realized = sum(t.get("pnl", 0) for t in closes)
-        unrealized = sum(
-            p.unrealized_pnl(self._current_prices.get(p.token_id, p.entry_price))
-            for p in self.open_positions
+        pnl_s = f"+${pos.pnl:.2f}" if pos.pnl >= 0 else f"-${abs(pos.pnl):.2f}"
+        logger.info(
+            f"CLOSE #{pos.id}: {pos.question[:50]} | {pos.outcome} | "
+            f"PnL={pnl_s} | reason={pos.exit_reason}"
         )
-        return {
-            "balance": round(self.balance, 2),
-            "starting_balance": self._starting_balance,
-            "total_pnl": round(realized, 2),
-            "unrealized_pnl": round(unrealized, 2),
-            "pnl_pct": round((self.balance - self._starting_balance) / self._starting_balance * 100, 2),
-            "total_trades": len(closes),
-            "win_rate": round(wins / len(closes) * 100, 1) if closes else 0,
-            "open_positions": len(self.open_positions),
-            "total_invested": round(self.total_invested, 2),
-            "available": round(self.available_balance, 2),
-        }
