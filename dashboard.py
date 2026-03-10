@@ -313,7 +313,7 @@ class LogPanel(Static):
 
     def compose(self) -> ComposeResult:
         yield Label("[bold cyan] ACTIVITY LOG[/]", markup=True)
-        yield Log(id="lg", highlight=True, markup=True, max_lines=300)
+        yield Log(id="lg", highlight=True, max_lines=300)
 
     def push(self, line: str):
         try:
@@ -393,7 +393,7 @@ class BotDashboard(App):
         self._log_cursor = 0
         self._pnl_history: list[float] = []
 
-    # ── layout ──────────────────────────────────────────────────────────────
+    # -- layout --------------------------------------------------------------
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="topbar"):
@@ -422,7 +422,7 @@ class BotDashboard(App):
 
         yield Footer()
 
-    # ── lifecycle ────────────────────────────────────────────────────────────
+    # -- lifecycle -----------------------------------------------------------
 
     def on_mount(self):
         self.set_interval(3, self._tick)
@@ -432,7 +432,7 @@ class BotDashboard(App):
             lp.push("[bold green]DEMO MODE[/] - fake data, refreshes every 3s")
             lp.push("[dim]Start bot and remove --demo to go live[/]")
 
-    # ── actions ──────────────────────────────────────────────────────────────
+    # -- actions -------------------------------------------------------------
 
     def action_quit(self):      self.exit()
     def action_refresh(self):
@@ -448,7 +448,7 @@ class BotDashboard(App):
             "[bold cyan]KEYS:[/]  R=refresh  C=clear  P=pause  Q=quit"
         )
 
-    # ── tick ─────────────────────────────────────────────────────────────────
+    # -- tick ----------------------------------------------------------------
 
     def _tick(self):
         if self.paused:
