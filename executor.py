@@ -347,3 +347,29 @@ class TradeExecutor:
             f"CLOSE #{pos.id}: {pos.question[:50]} | {pos.outcome} | "
             f"PnL={pnl_s} | reason={pos.exit_reason}"
         )
+
+    def get_summary(self) -> dict:
+        """Return a snapshot dict consumed by bot.py _report() and _save()."""
+        closed = [t for t in self.trade_history if t.get("type") == "close"]
+        wins = sum(1 for t in closed if t.get("pnl", 0) > 0)
+        win_rate = (wins / len(closed) * 100) if closed else 0.0
+        unrealized = sum(
+            (self._current_prices.get(p.token_id, p.entry_price) - p.entry_price) * p.size
+            for p in self.open_positions
+        )
+        pnl_pct = (
+            (self.balance - self._starting_balance) / self._starting_balance * 100
+            if self._starting_balance else 0.0
+        )
+        return {
+            "balance": self.balance,
+            "starting_balance": self._starting_balance,
+            "total_pnl": self.total_pnl,
+            "pnl_pct": pnl_pct,
+            "unrealized_pnl": unrealized,
+            "total_trades": len(closed),
+            "win_rate": win_rate,
+            "open_positions": len(self.open_positions),
+            "total_invested": self.total_invested,
+            "available": self.available_balance,
+        }
