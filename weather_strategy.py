@@ -45,16 +45,39 @@ AIRPORTS = {
     "atlanta":       {"lat": 33.6367,  "lon": -84.4281,  "noaa": True,  "station": "Hartsfield-Jackson (KATL)"},
     "chicago":       {"lat": 41.9742,  "lon": -87.9073,  "noaa": True,  "station": "O'Hare Intl Airport (KORD)"},
     "dallas":        {"lat": 32.8481,  "lon": -96.8512,  "noaa": True,  "station": "Dallas Love Field (KDAL)"},
+    "houston":       {"lat": 29.9902,  "lon": -95.3368,  "noaa": True,  "station": "George Bush Intercontinental (KIAH)"},
+    "los angeles":   {"lat": 33.9425,  "lon": -118.4081, "noaa": True,  "station": "Los Angeles Intl (KLAX)"},
+    "la":            {"lat": 33.9425,  "lon": -118.4081, "noaa": True,  "station": "Los Angeles Intl (KLAX)"},
+    "phoenix":       {"lat": 33.4373,  "lon": -112.0078, "noaa": True,  "station": "Phoenix Sky Harbor (KPHX)"},
+    "denver":        {"lat": 39.8561,  "lon": -104.6737, "noaa": True,  "station": "Denver Intl (KDEN)"},
     "london":        {"lat": 51.4706,  "lon": -0.4619,   "noaa": False, "station": "Heathrow Airport (EGLL)",      "met_office": True},
     "paris":         {"lat": 49.0128,  "lon":  2.5500,   "noaa": False, "station": "Charles de Gaulle (LFPG)",     "met_office": True},
     "munich":        {"lat": 48.3538,  "lon": 11.7861,   "noaa": False, "station": "Munich Airport (EDDM)",        "met_office": True},
+    "amsterdam":     {"lat": 52.3086,  "lon":  4.7639,   "noaa": False, "station": "Amsterdam Schiphol (EHAM)",    "met_office": True},
+    "madrid":        {"lat": 40.4719,  "lon": -3.5626,   "noaa": False, "station": "Madrid Barajas (LEMD)",        "met_office": True},
+    "rome":          {"lat": 41.8003,  "lon": 12.2389,   "noaa": False, "station": "Leonardo da Vinci (LIRF)",     "met_office": True},
     "seoul":         {"lat": 37.4691,  "lon": 126.4505,  "noaa": False, "station": "Incheon Intl (RKSI)"},
+    "tokyo":         {"lat": 35.5494,  "lon": 139.7798,  "noaa": False, "station": "Haneda Airport (RJTT)"},
+    "osaka":         {"lat": 34.7855,  "lon": 135.4380,  "noaa": False, "station": "Kansai Intl (RJBB)"},
+    "beijing":       {"lat": 40.0799,  "lon": 116.5844,  "noaa": False, "station": "Beijing Capital (ZBAA)"},
+    "shanghai":      {"lat": 31.1443,  "lon": 121.8083,  "noaa": False, "station": "Pudong Intl (ZSPD)"},
     "ankara":        {"lat": 40.1244,  "lon":  32.9992,  "noaa": False, "station": "Esenboga Airport (LTAC)"},
+    "istanbul":      {"lat": 40.9769,  "lon": 28.8146,   "noaa": False, "station": "Istanbul Airport (LTFM)"},
+    "dubai":         {"lat": 25.2532,  "lon": 55.3657,   "noaa": False, "station": "Dubai Intl (OMDB)"},
+    "singapore":     {"lat": 1.3644,   "lon": 103.9915,  "noaa": False, "station": "Changi Airport (WSSS)"},
+    "mumbai":        {"lat": 19.0896,  "lon": 72.8656,   "noaa": False, "station": "Chhatrapati Shivaji (VABB)"},
+    "delhi":         {"lat": 28.5562,  "lon": 77.1000,   "noaa": False, "station": "Indira Gandhi Intl (VIDP)"},
     "lucknow":       {"lat": 26.7606,  "lon":  80.8893,  "noaa": False, "station": "Chaudhary Charan Singh (VILK)"},
     "wellington":    {"lat": -41.3272, "lon": 174.8053,  "noaa": False, "station": "Wellington Airport (NZWN)"},
+    "sydney":        {"lat": -33.9461, "lon": 151.1772,  "noaa": False, "station": "Sydney Kingsford Smith (YSSY)"},
     "sao paulo":     {"lat": -23.4356, "lon": -46.4731,  "noaa": False, "station": "Guarulhos Intl (SBGR)"},
     "buenos aires":  {"lat": -34.8150, "lon": -58.5350,  "noaa": False, "station": "Ezeiza Intl (SAEZ)"},
     "toronto":       {"lat": 43.6772,  "lon": -79.6306,  "noaa": False, "station": "Pearson Intl (CYYZ)"},
+    "vancouver":     {"lat": 49.1967,  "lon": -123.1815, "noaa": False, "station": "Vancouver Intl (CYVR)"},
+    "mexico city":   {"lat": 19.4363,  "lon": -99.0721,  "noaa": False, "station": "Mexico City Intl (MMMX)"},
+    "cairo":         {"lat": 30.1219,  "lon": 31.4056,   "noaa": False, "station": "Cairo Intl (HECA)"},
+    "johannesburg":  {"lat": -26.1392, "lon": 28.2460,   "noaa": False, "station": "O.R. Tambo Intl (FAOR)"},
+    "nairobi":       {"lat": -1.3192,  "lon": 36.9275,   "noaa": False, "station": "Jomo Kenyatta Intl (HKJK)"},
 }
 
 MET_OFFICE_API_KEY = "eyJ4NXQjUzI1NiI6Ik5XVTVZakUxTkRjeVl6a3hZbUl4TkdSaFpqSmpOV1l6T1dGaE9XWXpNMk0yTWpRek5USm1OVEE0TXpOaU9EaG1NVFJqWVdNellXUm1ZalUyTTJJeVpBPT0iLCJraWQiOiJnYXRld2F5X2NlcnRpZmljYXRlX2FsaWFzIiwidHlwIjoiSldUIiwiYWxnIjoiUlMyNTYifQ==.eyJzdWIiOiJ3aGF0LnNjdWZAZ21haWwuY29tQGNhcmJvbi5zdXBlciIsImFwcGxpY2F0aW9uIjp7Im93bmVyIjoid2hhdC5zY3VmQGdtYWlsLmNvbSIsInRpZXJRdW90YVR5cGUiOm51bGwsInRpZXIiOiJVbmxpbWl0ZWQiLCJuYW1lIjoic2l0ZV9zcGVjaWZpYy05MDY3YzMwYy1kMTljLTQ4NzYtODc0OC01MTEyNTU4NThiZGYiLCJpZCI6NDE2NjUsInV1aWQiOiI1Zjg5MjI4Yy0xM2U3LTRkMzAtYTAyOC04NTYzYWM4OGU5ZGUifSwiaXNzIjoiaHR0cHM6XC9cL2FwaS1tYW5hZ2VyLmFwaS1tYW5hZ2VtZW50Lm1ldG9mZmljZS5jbG91ZDo0NDNcL29hdXRoMlwvdG9rZW4iLCJ0aWVySW5mbyI6eyJ3ZGhfc2l0ZV9zcGVjaWZpY19mcmVlIjp7InRpZXJRdW90YVR5cGUiOiJyZXF1ZXN0Q291bnQiLCJncmFwaFFMTWF4Q29tcGxleGl0eSI6MCwiZ3JhcGhRTE1heERlcHRoIjowLCJzdG9wT25RdW90YVJlYWNoIjp0cnVlLCJzcGlrZUFycmVzdExpbWl0IjowLCJzcGlrZUFycmVzdFVuaXQiOiJzZWMifX0sImtleXR5cGUiOiJQUk9EVUNUSU9OIiwic3Vic2NyaWJlZEFQSXMiOlt7InN1YnNjcmliZXJUZW5hbnREb21haW4iOiJjYXJib24uc3VwZXIiLCJuYW1lIjoiU2l0ZVNwZWNpZmljRm9yZWNhc3QiLCJjb250ZXh0IjoiXC9zaXRlc3BlY2lmaWNcL3YwIiwicHVibGlzaGVyIjoiSmFndWFyX0NJIiwidmVyc2lvbiI6InYwIiwic3Vic2NyaXB0aW9uVGllciI6IndkaF9zaXRlX3NwZWNpZmljX2ZyZWUifV0sInRva2VuX3R5cGUiOiJhcGlLZXkiLCJpYXQiOjE3NzMxNzMyNDIsImp0aSI6IjVmMjg1NWZlLTM1ZWMtNDQxZS1hMzhjLWNjZGE3MjQwYjI0ZiJ9.I3tFb4mfUVxCnPVTCAMJ_VgUx99SXIRVxY_2UbWEU9eH9IRvBXzjUOv8uC9hVVSw3LmzS4aMLnM6oiB2lJHSHxPGyFB3ybzcBYoa_wIFrt0H5UK_Br5IWGAkB1aG2xvVCburIu-QCHPT5PlpghfDb0MreUjXxB9fZT6HenvHUoHgZ3MZnuR499Y39Y1bdmvhtnf8ypS6wrf5oTuwIPW5rsQmK8QfpTscImt8eqYOjI1FqYJwuWxIdpcdKRg0tqRq0gTjQzHNCt6kGfDqtLtnblrjL0hXonG8DR5wmShr5oim7mAyGi7dENBL9vgkgS3zu4E4m1y7ZXN22QQt2hbD1A=="
@@ -92,26 +115,52 @@ def parse_weather_question(question: str) -> Optional[ParsedWeatherMarket]:
     if not city:
         return None
 
+    # Detect unit — degree symbol + C means Celsius
     unit = "F"
-    if any(x in q for x in ["deg c", "degrees c"]) or re.search(r'be\s+\d+c\b', q) or \
+    if re.search(r'\d+\s*°\s*c\b', q) or re.search(r'\d+-\d+\s*°\s*c\b', q) or \
+       any(x in q for x in ["deg c", "degrees c"]) or re.search(r'be\s+\d+c\b', q) or \
        re.search(r'\d+\s*c\s+on', q) or re.search(r'\d+\s*c\s*\?', q):
         unit = "C"
 
     is_or_below = "or below" in q or "or lower" in q
     is_or_higher = "or higher" in q or "or above" in q
 
+    # Pattern 1: range with degree symbol e.g. "78-79°F" or "10°C" range
+    m = re.search(r'(\d+)-(\d+)\s*°?\s*[fcFC]?\b', q)
+    if m:
+        return ParsedWeatherMarket(city, float(m.group(1)), float(m.group(2)),
+                                   unit, False, False, question)
+
+    # Pattern 2: between X-Y (no degree symbol)
     m = re.search(r'(?:between|be)\s+(\d+)-(\d+)', q)
     if m:
         return ParsedWeatherMarket(city, float(m.group(1)), float(m.group(2)),
                                    unit, False, False, question)
+
+    # Pattern 3: single value with degree symbol e.g. "10°C or higher" or "39°F or below"
+    m = re.search(r'(\d+)\s*°\s*[fcFC]?\s+or\s+(?:higher|below|above|lower)', q)
+    if m:
+        return ParsedWeatherMarket(city, float(m.group(1)), float(m.group(1)),
+                                   unit, is_or_below, is_or_higher, question)
+
+    # Pattern 4: "be 75F on" style
     m = re.search(r'be\s+(\d+)\s*[FCfc]?\s+on', q)
     if m:
         return ParsedWeatherMarket(city, float(m.group(1)), float(m.group(1)),
                                    unit, is_or_below, is_or_higher, question)
+
+    # Pattern 5: "75F or higher/below"
     m = re.search(r'(\d+)\s*[FCfc]\s+or\s+(?:higher|below|above|lower)', q)
     if m:
         return ParsedWeatherMarket(city, float(m.group(1)), float(m.group(1)),
                                    unit, is_or_below, is_or_higher, question)
+
+    # Pattern 6: single value with degree symbol, no qualifier (e.g. "exactly 10°C")
+    m = re.search(r'(\d+)\s*°\s*[fcFC]?', q)
+    if m:
+        return ParsedWeatherMarket(city, float(m.group(1)), float(m.group(1)),
+                                   unit, is_or_below, is_or_higher, question)
+
     return None
 
 
