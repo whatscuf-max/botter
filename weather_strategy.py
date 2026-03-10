@@ -208,7 +208,7 @@ class ForecastFetcher:
             sources.append("Open-Meteo")
 
         if info.get("noaa"):
-            noaa = await self._fetch_noaa(lat, lon)
+            noaa = await self._fetch_noaa(lat, lon, target_date=target_date)
             if noaa is not None:
                 temps_c.append(noaa)
                 sources.append("NOAA")
@@ -255,7 +255,7 @@ class ForecastFetcher:
         )
         return result
 
-    async def _fetch_noaa(self, lat: float, lon: float) -> Optional[float]:
+    async def _fetch_noaa(self, lat: float, lon: float, target_date: Optional[str] = None) -> Optional[float]:
         try:
             gk = f"{lat:.4f},{lon:.4f}"
             if gk not in self._noaa_grid_cache:
@@ -274,10 +274,27 @@ class ForecastFetcher:
                 headers={"Accept": "application/geo+json"},
             )
             r.raise_for_status()
-            for p in r.json().get("properties", {}).get("periods", []):
+            periods = r.json().get("properties", {}).get("periods", [])
+
+            # If we have a target date, find the daytime period matching that date
+            if target_date:
+                for p in periods:
+                    if not p.get("isDaytime", False):
+                        continue
+                    start = p.get("startTime", "")
+                    # startTime format: "2026-03-11T06:00:00-08:00"
+                    if start[:10] == target_date:
+                        t = float(p["temperature"])
+                        return (t - 32) * 5 / 9 if p.get("temperatureUnit") == "F" else t
+                # If no exact date match, fall through to first daytime period as fallback
+                logger.debug(f"NOAA: no period found for {target_date}, falling back to first daytime period")
+
+            # Fallback: first daytime period (today/tomorrow)
+            for p in periods:
                 if p.get("isDaytime", False):
                     t = float(p["temperature"])
                     return (t - 32) * 5 / 9 if p.get("temperatureUnit") == "F" else t
+
         except Exception as e:
             logger.debug(f"NOAA err: {e}")
         return None
