@@ -1,9 +1,8 @@
 """
-Polymarket Weather Trading Bot
-Sell commands: stop bot with Ctrl+C, then run:
-  python -c "from executor import ...; sell(3)" 
-Or use the built-in command mode.
+bot.py  -  Polymarket Weather Trading Bot
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
@@ -12,6 +11,7 @@ import os
 import signal
 import sys
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,6 +21,29 @@ from strategies import StrategyEngine, is_weather_market
 from executor import TradeExecutor
 from risk_manager import RiskManager
 from weather_strategy import WeatherStrategy, AIRPORTS
+
+
+class RingBufferHandler(logging.Handler):
+    def __init__(self, capacity=200):
+        super().__init__()
+        self._buf = deque(maxlen=capacity)
+
+    def emit(self, record):
+        self._buf.append({
+            "ts": datetime.fromtimestamp(record.created).strftime("%H:%M:%S"),
+            "level": record.levelname,
+            "msg": self.format(record),
+        })
+
+    def lines(self):
+        return list(self._buf)
+
+
+_ring = RingBufferHandler(200)
+_ring.setFormatter(logging.Formatter(
+    "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+    datefmt="%H:%M:%S"
+))
 
 
 def setup_logging(config):
@@ -35,7 +58,7 @@ def setup_logging(config):
     fh.setFormatter(fmt)
     try:
         ch = logging.StreamHandler(
-            open(sys.stdout.fileno(), mode='w', encoding='utf-8', closefd=False)
+            open(sys.stdout.fileno(), mode="w", encoding="utf-8", closefd=False)
         )
     except Exception:
         ch = logging.StreamHandler()
@@ -45,6 +68,7 @@ def setup_logging(config):
     root.setLevel(logging.DEBUG)
     root.addHandler(fh)
     root.addHandler(ch)
+    root.addHandler(_ring)
 
 
 logger = logging.getLogger("polymarket_bot.main")
@@ -64,7 +88,8 @@ class PolymarketBot:
         self._cycle_count = 0
         self._start_time = time.time()
         self._last_report = 0
-        self._forecasts: dict = {}
+        self._forecasts = {}
+        self._pnl_history = []
 
     def _init_clob(self):
         if self.config.dry_run:
@@ -75,11 +100,13 @@ class PolymarketBot:
             return None
         try:
             from py_clob_client.client import ClobClient
-            c = ClobClient(self.config.api.clob_host,
+            c = ClobClient(
+                self.config.api.clob_host,
                 key=self.config.wallet.private_key,
                 chain_id=self.config.api.chain_id,
                 signature_type=self.config.wallet.signature_type,
-                funder=self.config.wallet.funder_address or None)
+                funder=self.config.wallet.funder_address or None,
+            )
             c.set_api_creds(c.create_or_derive_api_creds())
             logger.info("LIVE MODE")
             return c
@@ -115,29 +142,34 @@ class PolymarketBot:
             await asyncio.sleep(300)
             return
         try:
-            # Fetch 5 pages
             all_m = []
             seen = set()
             for pg in range(5):
                 batch = await self.data.fetch_active_markets(
-                    limit=500, order="volume24hr", ascending=False, offset=pg*500)
+                    limit=500, order="volume24hr", ascending=False, offset=pg * 500)
                 for m in batch:
                     if m.condition_id not in seen:
                         all_m.append(m)
                         seen.add(m.condition_id)
-                if len(batch) < 500: break
+                if len(batch) < 500:
+                    break
                 await asyncio.sleep(0.3)
 
             wx_m = [m for m in all_m if is_weather_market(m)]
-            logger.info(f"Scanned {len(all_m)} | {len(wx_m)} weather | Open: {len(self.executor.open_positions)}")
+            logger.info(
+                f"Scanned {len(all_m)} | {len(wx_m)} weather | "
+                f"Open: {len(self.executor.open_positions)}"
+            )
 
             if self._cycle_count < 3:
                 for m in wx_m[:10]:
                     logger.info(f"  WX: {m.question} | Vol=${m.volume_24h:,.0f}")
 
             for m in wx_m[:20] + all_m[:20]:
-                try: await self.data.fetch_market_with_books(m)
-                except: pass
+                try:
+                    await self.data.fetch_market_with_books(m)
+                except Exception:
+                    pass
                 await asyncio.sleep(0.1)
 
             prices = {}
@@ -155,8 +187,8 @@ class PolymarketBot:
                         ph[o.token_id] = self.data.get_price_history(o.token_id)
 
             sigs = await self.strategy.generate_signals(
-                all_markets=all_m, crypto_markets=[], btc_prices=[], price_histories=ph,
-                balance=self.executor.balance)
+                all_markets=all_m, crypto_markets=[], btc_prices=[],
+                price_histories=ph, balance=self.executor.balance)
 
             if wx_m:
                 try:
@@ -166,27 +198,36 @@ class PolymarketBot:
                         sigs.extend(wx)
                     elif self._cycle_count % 6 == 0:
                         logger.info(f"WEATHER: {len(wx_m)} markets, no value trades")
-                    if hasattr(self.weather, 'fetcher'):
-                        self._forecasts = {c: d for c, (_, d) in self.weather.fetcher._forecast_cache.items()}
+                    if hasattr(self.weather, "fetcher"):
+                        self._forecasts = {
+                            c: d for c, (_, d) in
+                            self.weather.fetcher._forecast_cache.items()
+                        }
                 except Exception as e:
                     logger.error(f"Weather err: {e}", exc_info=True)
 
             if sigs:
                 ok = self.risk.filter_signals(
-                    signals=sigs, balance=self.executor.balance,
+                    signals=sigs,
+                    balance=self.executor.balance,
                     available_balance=self.executor.available_balance,
                     open_position_count=len(self.executor.open_positions),
                     total_invested=self.executor.total_invested,
-                    trade_history=self.executor.trade_history)
+                    trade_history=self.executor.trade_history,
+                )
                 for s in ok:
                     s.size = self.risk.calculate_compound_size(
                         s.size, self.executor.balance, tc.starting_balance)
                     o = await self.executor.execute_signal(s)
                     if o and o.status.value == "filled":
-                        logger.info(f"TRADE: {s.outcome} | {s.market.question} | ${s.size:.2f}@{s.price:.3f}")
+                        logger.info(
+                            f"TRADE: {s.outcome} | {s.market.question} | "
+                            f"${s.size:.2f}@{s.price:.3f}"
+                        )
                     await asyncio.sleep(1)
             elif self._cycle_count % 18 == 0:
-                logger.info(f"Scanning | Bal=${self.executor.balance:.2f} | Wx={len(wx_m)}")
+                logger.info(
+                    f"Scanning | Bal=${self.executor.balance:.2f} | Wx={len(wx_m)}")
 
             closed = await self.executor.evaluate_positions_with_data(
                 prices, "", 0, self._forecasts)
@@ -207,34 +248,23 @@ class PolymarketBot:
   Mode:     {mode} | Balance: ${self.config.trading.starting_balance:.2f}
   Scan:     Every {self.config.trading.scan_interval}s (2500 markets)
   Report:   Every 5 min | Max positions: {self.config.trading.max_concurrent_positions}
-  Forecast: Refreshes every 5 min from airport stations
   Sources:  NOAA (US) + Open-Meteo (worldwide)
-  Risk:     Only buy when forecast DISAGREES with market
-            Never buy YES or NO above 75% (no edge)
-  Exit:     Hold to settlement, exit on 3+ degree forecast shift
-================================================================
-  SELL COMMANDS: Stop bot (Ctrl+C) then run:
-    python -c "exec(open('sell_cmd.py').read())" positions
-    python -c "exec(open('sell_cmd.py').read())" sell 3
-    python -c "exec(open('sell_cmd.py').read())" sell all
 ================================================================
 """)
 
     def _report(self):
         s = self.executor.get_summary()
         h = (time.time() - self._start_time) / 3600
-        rlz = s['total_pnl']
-        unr = s.get('unrealized_pnl', 0)
+        rlz = s["total_pnl"]
+        unr = s.get("unrealized_pnl", 0)
         tot = rlz + unr
 
-        def f(v): return f"+${v:.2f}" if v >= 0 else f"-${abs(v):.2f}"
-        pct = s['pnl_pct']
+        def f(v):
+            return f"+${v:.2f}" if v >= 0 else f"-${abs(v):.2f}"
+
+        pct = s["pnl_pct"]
         ps = f"+{pct:.1f}%" if pct >= 0 else f"{pct:.1f}%"
-
-        # ALL positions - NO CAP
         all_open = self.executor.open_positions
-        total_open = len(all_open)
-
         pos_text = ""
         for p in all_open:
             cp = self.executor._current_prices.get(p.token_id, p.entry_price)
@@ -248,7 +278,6 @@ class PolymarketBot:
         if not pos_text:
             pos_text = "\n  No open positions."
 
-        # Forecasts with airport names
         fc_text = ""
         for city in sorted(self._forecasts.keys()):
             fc = self._forecasts[city]
@@ -262,42 +291,83 @@ class PolymarketBot:
 
         print(f"""
 ============ REPORT ({time.strftime('%H:%M:%S')}) ============
-  BALANCE
-    Start: ${s['starting_balance']:.2f} | Now: ${s['balance']:.2f} ({ps})
-    Invested: ${s['total_invested']:.2f} | Free: ${s['available']:.2f}
-
-  PNL
-    Realized:   {f(rlz)} ({s['total_trades']} trades, {s['win_rate']:.0f}%W)
-    Unrealized: {f(unr)} ({total_open} open)
-    Total:      {f(tot)} | Per hr: {f(rlz / max(h, 0.01))}
-
-  POSITIONS ({total_open} open){pos_text}
-
-  FORECASTS (Airport Stations - live every 5 min){fc_text}
-
+  Balance: ${s['starting_balance']:.2f} -> ${s['balance']:.2f} ({ps})
+  Realized: {f(rlz)} | Unrealized: {f(unr)} | Total: {f(tot)}
+  Trades: {s['total_trades']} | Win rate: {s['win_rate']:.0f}%
+  Positions ({len(all_open)} open){pos_text}
+  Forecasts{fc_text}
   Uptime: {h:.1f}h | Cycles: {self._cycle_count}
-==============================================""")
+==============================================
+""")
 
     def _save(self):
         Path("state").mkdir(exist_ok=True)
         try:
-            # Save state including executor for sell commands
+            s = self.executor.get_summary()
+            uptime_secs = int(time.time() - self._start_time)
+
+            total_pnl = s["total_pnl"] + s.get("unrealized_pnl", 0)
+            self._pnl_history.append(round(total_pnl, 4))
+            if len(self._pnl_history) > 120:
+                self._pnl_history = self._pnl_history[-120:]
+
+            positions = []
+            for p in self.executor.open_positions:
+                cp = self.executor._current_prices.get(p.token_id, p.entry_price)
+                upnl = p.unrealized_pnl(cp)
+                upnl_pct = p.unrealized_pnl_pct(cp) * 100
+                positions.append({
+                    "id": p.id,
+                    "question": p.question,
+                    "outcome": p.outcome,
+                    "entry_price": round(p.entry_price, 4),
+                    "current_price": round(cp, 4),
+                    "size": round(p.size, 2),
+                    "cost": round(p.cost, 2),
+                    "unrealized_pnl": round(upnl, 4),
+                    "unrealized_pnl_pct": round(upnl_pct, 2),
+                    "confidence": round(p.confidence, 4),
+                    "forecast_temp": p.forecast_temp,
+                    "forecast_unit": p.forecast_unit,
+                    "temp_range_low": p.temp_range_low,
+                    "temp_range_high": p.temp_range_high,
+                    "city": p.city,
+                    "age": p.age_str,
+                    "signal_type": p.signal_type,
+                })
+
+            forecasts = {}
+            for city, fc in self._forecasts.items():
+                forecasts[city] = {
+                    "temp_f": fc.get("temp_f", 0),
+                    "temp_c": fc.get("temp_c", 0),
+                    "sources": fc.get("sources", []),
+                    "station": fc.get(
+                        "station",
+                        AIRPORTS.get(city.lower(), {}).get("station", city)
+                    ),
+                }
+
             state = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "summary": self.executor.get_summary(),
-                "trade_history": self.executor.trade_history[-200:],
+                "mode": "LIVE" if not self.config.dry_run else "PAPER",
+                "uptime_secs": uptime_secs,
                 "cycle_count": self._cycle_count,
-                "positions": [
-                    {"id": p.id, "question": p.question, "outcome": p.outcome,
-                     "entry_price": p.entry_price, "size": p.size, "cost": p.cost,
-                     "city": p.city, "age": p.age_str}
-                    for p in self.executor.open_positions
-                ],
+                "summary": s,
+                "pnl_history": self._pnl_history,
+                "positions": positions,
+                "forecasts": forecasts,
+                "log_lines": _ring.lines(),
+                "trade_history": self.executor.trade_history[-200:],
             }
-            with open("state/bot_state.json", "w", encoding="utf-8") as fp:
+
+            tmp = Path("state/bot_state.json.tmp")
+            with open(tmp, "w", encoding="utf-8") as fp:
                 json.dump(state, fp, indent=2, default=str)
-        except Exception:
-            pass
+            tmp.replace(Path("state/bot_state.json"))
+
+        except Exception as e:
+            logger.warning(f"_save failed: {e}")
 
     async def _shutdown(self):
         logger.info("Shutting down...")
@@ -316,35 +386,42 @@ def main():
     p.add_argument("--live", action="store_true")
     p.add_argument("--scan-interval", type=int, default=None)
     p.add_argument("--log-level", default="INFO")
-    # Sell commands
-    p.add_argument("--sell", type=int, default=None, help="Sell position by ID")
-    p.add_argument("--sell-all", action="store_true", help="Sell all positions")
-    p.add_argument("--positions", action="store_true", help="Show positions")
+    p.add_argument("--sell", type=int, default=None)
+    p.add_argument("--sell-all", action="store_true")
+    p.add_argument("--positions", action="store_true")
     args = p.parse_args()
 
     if args.positions:
-        # Quick view mode - just show positions from saved state
         try:
             with open("state/bot_state.json") as fp:
                 state = json.load(fp)
             print(f"\nBalance: ${state['summary']['balance']:.2f}")
             print(f"Open positions: {state['summary']['open_positions']}")
             for pos in state.get("positions", []):
-                print(f"  #{pos['id']:<3d} {pos['outcome']:3s} | ${pos['cost']:.2f} | {pos['age']:>5s} | {pos['question']}")
+                upnl = pos.get("unrealized_pnl", 0)
+                sign = "+" if upnl >= 0 else ""
+                print(
+                    f"  #{pos['id']:<3d} {pos['outcome']:3s} | "
+                    f"${pos['cost']:.2f} | {sign}${upnl:.2f} uPnL | "
+                    f"{pos['age']:>5s} | {pos['question']}"
+                )
         except Exception as e:
             print(f"No state file found. Run the bot first. ({e})")
         return
 
-    if args.balance: config.trading.starting_balance = args.balance
-    if args.live: config.dry_run = False
-    if args.scan_interval: config.trading.scan_interval = args.scan_interval
+    if args.balance:
+        config.trading.starting_balance = args.balance
+    if args.live:
+        config.dry_run = False
+    if args.scan_interval:
+        config.trading.scan_interval = args.scan_interval
     config.logging.log_level = args.log_level
 
     setup_logging(config)
     bot = PolymarketBot(config)
     loop = asyncio.new_event_loop()
-    signal.signal(signal.SIGINT, lambda s, f: setattr(bot, 'running', False))
-    signal.signal(signal.SIGTERM, lambda s, f: setattr(bot, 'running', False))
+    signal.signal(signal.SIGINT, lambda s, f: setattr(bot, "running", False))
+    signal.signal(signal.SIGTERM, lambda s, f: setattr(bot, "running", False))
     try:
         loop.run_until_complete(bot.start())
     finally:
