@@ -26,7 +26,8 @@ from rich.text import Text
 # ---------------------------------------------------------------------------
 # STATE FILE  (bot.py writes this every cycle)
 # ---------------------------------------------------------------------------
-STATE_FILE = Path("bot_state.json")
+STATE_FILE = Path("state/bot_state.json")
+_STATE_FILE_ALT = Path("bot_state.json")
 
 # ---------------------------------------------------------------------------
 # DEMO DATA
@@ -297,7 +298,7 @@ class PosTable(Static):
                 Text(f"{_sgn(upnl)}${upnl:.2f}", style=f"bold {pnl_col}"),
                 _conf_bar(conf, 8),
                 _temp_marker(fc, lo, hi, unit),
-                Text(p.get("age_str", "?"), style="dim"),
+                Text(p.get("age_str", p.get("age", "?")), style="dim"),
             )
 
 
@@ -393,7 +394,7 @@ class BotDashboard(App):
         self._log_cursor = 0
         self._pnl_history: list[float] = []
 
-    # -- layout --------------------------------------------------------------
+    # ── layout ──────────────────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="topbar"):
@@ -422,7 +423,7 @@ class BotDashboard(App):
 
         yield Footer()
 
-    # -- lifecycle -----------------------------------------------------------
+    # ── lifecycle ────────────────────────────────────────────────────────────
 
     def on_mount(self):
         self.set_interval(3, self._tick)
@@ -432,23 +433,22 @@ class BotDashboard(App):
             lp.push("[bold green]DEMO MODE[/] - fake data, refreshes every 3s")
             lp.push("[dim]Start bot and remove --demo to go live[/]")
 
-    # -- actions -------------------------------------------------------------
+    # ── actions ──────────────────────────────────────────────────────────────
 
     def action_quit(self):      self.exit()
     def action_refresh(self):
         self._tick()
-        self.query_one("#log_panel", LogPanel).push("[cyan]Manual refresh[/]")
+        self.query_one("#log_panel", LogPanel).push("Manual refresh")
     def action_clear_log(self): self.query_one("#log_panel", LogPanel).clear_log()
     def action_pause(self):
         self.paused = not self.paused
-        label = "[yellow]PAUSED[/]" if self.paused else "[green]LIVE[/]"
-        self.query_one("#log_panel", LogPanel).push(f"Updates {label}")
+        self.query_one("#log_panel", LogPanel).push("Updates PAUSED" if self.paused else "Updates LIVE")
     def action_show_help(self):
         self.query_one("#log_panel", LogPanel).push(
-            "[bold cyan]KEYS:[/]  R=refresh  C=clear  P=pause  Q=quit"
+            "KEYS:  R=refresh  C=clear  P=pause  Q=quit"
         )
 
-    # -- tick ----------------------------------------------------------------
+    # ── tick ─────────────────────────────────────────────────────────────────
 
     def _tick(self):
         if self.paused:
@@ -456,44 +456,56 @@ class BotDashboard(App):
         state = _demo_state() if self._demo else self._read_state()
         if state:
             self._apply(state)
+        elif not self._demo:
+            # State file not found — show waiting message in log
+            try:
+                lp = self.query_one("#log_panel", LogPanel)
+                lp.push("[yellow]Waiting for bot state file...[/] Run bot.py in same directory")
+            except Exception:
+                pass
 
     def _read_state(self) -> dict:
-        try:
-            if STATE_FILE.exists():
-                return json.loads(STATE_FILE.read_text())
-        except Exception:
-            pass
+        for path in [STATE_FILE, _STATE_FILE_ALT]:
+            try:
+                if path.exists():
+                    return json.loads(path.read_text())
+            except Exception as e:
+                pass
+        # State file not found — bot may not be running yet
         return {}
 
     def _apply(self, s: dict):
+        summary = s.get("summary", s)
         # top bar
         ts = datetime.now().strftime("%H:%M:%S")
         self.query_one("#lbl_time",  Label).update(f"{ts}  ")
-        self.query_one("#lbl_cycle", Label).update(f"cycle {s.get('cycle', 0)}")
-        mode_txt = "[bold yellow]PAPER[/]" if s.get("dry_run", True) else "[bold bright_red]LIVE[/]"
-        self.query_one("#lbl_mode",  Label).update(mode_txt)
+        self.query_one("#lbl_cycle", Label).update(f"cycle {s.get('cycle_count', s.get('cycle', 0))}")
+        mode = s.get("mode", "PAPER")
+        self.query_one("#lbl_mode",  Label).update("PAPER" if mode == "PAPER" else "LIVE")
 
         # stats
-        bal   = s.get("balance",        0.0)
-        rpnl  = s.get("total_pnl",      0.0)
-        upnl  = s.get("unrealized_pnl", 0.0)
-        winr  = s.get("win_rate",        0.0)
-        npos  = s.get("open_positions",    0)
-        inv   = s.get("total_invested",  0.0)
-        avail = s.get("available",       0.0)
-        pct   = s.get("pnl_pct",         0.0)
+        bal   = summary.get("balance",         0.0)
+        rpnl  = summary.get("total_pnl",       0.0)
+        upnl  = summary.get("unrealized_pnl",  0.0)
+        winr  = summary.get("win_rate",         0.0)
+        npos  = summary.get("open_positions",     0)
+        inv   = summary.get("total_invested",   0.0)
+        avail = summary.get("available",        0.0)
+        pct   = summary.get("pnl_pct",          0.0)
+        if avail == 0.0 and bal > 0:
+            avail = bal - inv
 
         self.query_one("#sb_bal",   StatBox).set_val(f"${bal:,.2f}")
         self.query_one("#sb_rpnl",  StatBox).set_val(f"{_sgn(rpnl)}${rpnl:.2f} ({_sgn(pct)}{pct:.2f}%)", _col(rpnl))
         self.query_one("#sb_upnl",  StatBox).set_val(f"{_sgn(upnl)}${upnl:.2f}", _col(upnl))
         self.query_one("#sb_wr",    StatBox).set_val(f"{winr:.1f}%", "bright_green" if winr >= 55 else "yellow")
         self.query_one("#sb_pos",   StatBox).set_val(f"{npos} open", "cyan")
-        self.query_one("#sb_inv",   StatBox).set_val(f"${inv:.2f}")
-        self.query_one("#sb_avail", StatBox).set_val(f"${avail:.2f}", "bright_green" if avail > 100 else "yellow")
+        self.query_one("#sb_inv",   StatBox).set_val(f"${inv:,.2f}")
+        self.query_one("#sb_avail", StatBox).set_val(f"${avail:,.2f}", "bright_green" if avail > 100 else "yellow")
 
         # sparkline
         hist = list(s.get("pnl_history", []))
-        if upnl != 0:
+        if not hist and upnl != 0:
             hist.append(upnl)
         self._pnl_history = hist
         self.query_one("#spark", SparkPanel).set_history(hist)
@@ -504,9 +516,8 @@ class BotDashboard(App):
         # log - only new lines
         log_lines = s.get("log_lines", [])
         lp = self.query_one("#log_panel", LogPanel)
-        new_lines = log_lines[self._log_cursor:]
-        for line in new_lines:
-            lp.push(line)
+        for line in log_lines[self._log_cursor:]:
+            lp.push(line.get("msg", str(line)) if isinstance(line, dict) else str(line))
         self._log_cursor = len(log_lines)
 
 
@@ -517,7 +528,7 @@ def main():
     parser = argparse.ArgumentParser(description="Polymarket Bot Dashboard")
     parser.add_argument("--demo", action="store_true", help="Run with fake demo data")
     args = parser.parse_args()
-    demo = args.demo or not STATE_FILE.exists()
+    demo = args.demo
     BotDashboard(demo=demo).run()
 
 
