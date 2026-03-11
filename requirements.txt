@@ -1,12 +1,11 @@
-# Core dependencies
+# Core async HTTP
 httpx>=0.25.0
-asyncio-atexit>=1.0.0
 
-# Polymarket CLOB client (for live trading)
-py-clob-client>=0.34.0
+# RSA-PSS signing for Kalshi API auth
+cryptography>=41.0.0
 
 # Environment management
 python-dotenv>=1.0.0
 
-# Optional: notifications
+# Optional: Telegram notifications
 # python-telegram-bot>=20.0
