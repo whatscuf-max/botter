@@ -90,6 +90,8 @@ class PolymarketBot:
         self._last_report = 0
         self._forecasts = {}
         self._pnl_history = []
+        self._wx_markets_cache = []
+        self._weather_refresh_interval = 60
 
     def _init_clob(self):
         if self.config.dry_run:
@@ -121,6 +123,7 @@ class PolymarketBot:
         self._print_banner()
         logger.info("Bot starting...")
         try:
+            asyncio.create_task(self._fast_weather_loop())
             while self.running:
                 await self._cycle()
                 self._cycle_count += 1
@@ -156,6 +159,7 @@ class PolymarketBot:
                 await asyncio.sleep(0.3)
 
             wx_m = [m for m in all_m if is_weather_market(m)]
+            self._wx_markets_cache = wx_m
             logger.info(
                 f"Scanned {len(all_m)} | {len(wx_m)} weather | "
                 f"Open: {len(self.executor.open_positions)}"
@@ -252,6 +256,21 @@ class PolymarketBot:
 ================================================================
 """)
 
+
+    async def _fast_weather_loop(self):
+        """Re-fetch weather forecasts every 60s independently of main scan cycle."""
+        await asyncio.sleep(30)  # initial delay to let first cycle run
+        while self.running:
+            try:
+                if hasattr(self.weather, 'fetcher') and self._wx_markets_cache:
+                    self.weather.fetcher._forecast_cache.clear()
+                    logger.debug("WEATHER REFRESH: forecast cache cleared, re-fetching...")
+                    await self.weather.analyze(self._wx_markets_cache, self.executor.balance)
+                    logger.debug("WEATHER REFRESH: forecasts updated")
+            except Exception as e:
+                logger.debug(f"WEATHER REFRESH error (non-fatal): {e}")
+            await asyncio.sleep(self._weather_refresh_interval)
+
     def _report(self):
         s = self.executor.get_summary()
         h = (time.time() - self._start_time) / 3600
@@ -332,7 +351,7 @@ class PolymarketBot:
                     "temp_range_low": p.temp_range_low,
                     "temp_range_high": p.temp_range_high,
                     "city": p.city,
-                    "age": p.age_str,
+                    "age_str": p.age_str,
                     "signal_type": p.signal_type,
                 })
 
