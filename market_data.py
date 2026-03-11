@@ -5,6 +5,7 @@
 import base64
 import datetime
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -127,10 +128,16 @@ class KalshiClient:
         self.config = config
         self.base_url = config.kalshi.active_url
         self.api_key_id = config.kalshi.api_key_id
-        with open(config.kalshi.private_key_path, "rb") as f:
-            self._private_key = serialization.load_pem_private_key(f.read(), password=None)
+        # Only load the private key if we have a real key file (skip in dry-run/demo with blank placeholder)
+        self._private_key = None
+        key_path = config.kalshi.private_key_path
+        if key_path and os.path.exists(key_path) and os.path.getsize(key_path) > 0:
+            with open(key_path, "rb") as f:
+                self._private_key = serialization.load_pem_private_key(f.read(), password=None)
 
     def _headers(self, method: str, path: str) -> dict:
+        if self._private_key is None:
+            return {}  # no auth in dry-run mode
         h = _sign_request(self._private_key, method, path)
         h["KALSHI-ACCESS-KEY"] = self.api_key_id
         return h
