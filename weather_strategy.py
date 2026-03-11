@@ -103,7 +103,7 @@ def parse_weather_question(question: str) -> Optional[ParsedWeatherMarket]:
         return None
     city = None
     for name in sorted(AIRPORTS.keys(), key=len, reverse=True):
-        if name in q:
+        if re.search(r'\b' + re.escape(name) + r'\b', q):
             city = name
             break
     if not city:
