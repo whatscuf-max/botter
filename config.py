@@ -3,39 +3,40 @@
 import os
 from dataclasses import dataclass, field
 
-
 @dataclass
 class KalshiConfig:
     api_key_id: str = ""
-    private_key_path: str = ""
+    private_key_path: str = "kalshi_private_key.pem"
     base_url: str = "https://trading-api.kalshi.com/trade-api/v2"
     demo_url: str = "https://demo-api.kalshi.co/trade-api/v2"
-    use_demo: bool = False
+    use_demo: bool = True
 
     @property
     def active_url(self) -> str:
         return self.demo_url if self.use_demo else self.base_url
 
-
 @dataclass
 class TradingConfig:
     starting_balance: float = 30.0
     max_position_pct: float = 0.06
-    max_daily_loss_pct: float = 0.15
     max_concurrent_positions: int = 250
     min_arb_spread: float = 0.015
     arb_fee_rate: float = 0.02
     arb_min_liquidity: float = 10.0
-    compound_profits: bool = True
     scan_interval: int = 10
     momentum_threshold: float = 0.55
-
+    max_drawdown: float = 0.25
+    daily_loss_limit: float = 0.10
+    min_confidence: float = 0.55
+    min_edge: float = 0.02
+    max_invested_pct: float = 0.80
+    max_daily_trades: int = 50
+    max_consecutive_losses: int = 5
 
 @dataclass
 class LogConfig:
     log_file: str = "trading_log.json"
     log_level: str = "INFO"
-
 
 @dataclass
 class BotConfig:
@@ -47,17 +48,14 @@ class BotConfig:
     @classmethod
     def from_env(cls):
         c = cls()
-        c.kalshi.api_key_id = os.getenv("KALSHI_API_KEY_ID", "")
+        c.kalshi.api_key_id     = os.getenv("KALSHI_API_KEY_ID", "")
         c.kalshi.private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "kalshi_private_key.pem")
-        c.kalshi.use_demo = os.getenv("KALSHI_USE_DEMO", "false").lower() == "true"
+        c.kalshi.use_demo       = os.getenv("KALSHI_USE_DEMO", "true").lower() == "true"
         c.trading.starting_balance = float(os.getenv("STARTING_BALANCE", "30"))
-        c.dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
+        c.dry_run               = os.getenv("DRY_RUN", "true").lower() == "true"
         return c
 
-
-# Kalshi temperature series -> NWS station + exact coordinates
-# Settlement: NWS Daily Climatological Report released the following morning
-# IMPORTANT: Kalshi prices are in CENTS (int 1-99), not decimals (0.01-0.99)
+# Kalshi temperature series tickers -> NWS station + coordinates
 KALSHI_WEATHER_SERIES = {
     "KXHIGHNY":   {"city": "New York City",  "station": "KNYC", "lat": 40.7789,  "lon": -73.9692},
     "KXHIGHCHI":  {"city": "Chicago",        "station": "KMDW", "lat": 41.7868,  "lon": -87.7522},
