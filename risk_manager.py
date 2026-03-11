@@ -1,164 +1,174 @@
 """
-Risk Manager
-Enforces position limits, daily loss caps, and portfolio-level risk controls.
-Runs as a guardian layer between the strategy engine and executor.
+risk_manager.py  -  Risk controls for Kalshi Weather Trading Bot
 """
+
+from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List
+from dataclasses import dataclass, field
+from typing import List, Optional
 
-from strategies import TradeSignal, SignalType
+logger = logging.getLogger("kalshi_bot.risk")
 
-logger = logging.getLogger("polymarket_bot.risk")
+
+@dataclass
+class RiskState:
+    daily_pnl: float = 0.0
+    daily_trade_count: int = 0
+    consecutive_losses: int = 0
+    peak_balance: float = 0.0
+    last_reset: float = field(default_factory=time.time)
 
 
 class RiskManager:
     """
-    Risk management rules:
-    1. Max position size: 5% of balance per trade (10% for arb)
-    2. Max concurrent positions: 5
-    3. Daily loss limit: 10% of starting balance
-    4. Max exposure: 50% of balance invested at any time
-    5. No duplicate markets
-    6. Minimum confidence threshold
-    7. Compounding: grow position sizes as balance grows
+    Enforces position limits, drawdown limits, daily loss limits,
+    and signal quality filters for the Kalshi bot.
     """
 
     def __init__(self, config):
         self.config = config
-        self._daily_pnl = 0.0
-        self._daily_reset_time = time.time()
-        self._traded_markets = set()  # condition_ids traded today
+        self.tc = config.trading
+        self.state = RiskState(peak_balance=self.tc.starting_balance)
+        self._reset_time = time.time()
+
+    # ------------------------------------------------------------------
+    # Core checks
+    # ------------------------------------------------------------------
+
+    def should_pause(self, balance: float, starting_balance: float) -> bool:
+        """Return True if the bot should pause trading due to risk limits."""
+        self._maybe_reset_daily()
+
+        # Max drawdown from peak
+        if self.state.peak_balance > 0:
+            drawdown = (self.state.peak_balance - balance) / self.state.peak_balance
+            if drawdown >= self.tc.max_drawdown:
+                logger.warning(
+                    f"PAUSING: Drawdown {drawdown:.1%} >= limit {self.tc.max_drawdown:.1%}"
+                )
+                return True
+
+        # Daily loss limit
+        if self.state.daily_pnl <= -abs(self.tc.daily_loss_limit * starting_balance):
+            logger.warning(
+                f"PAUSING: Daily loss ${self.state.daily_pnl:.2f} hit limit"
+            )
+            return True
+
+        # Consecutive losses
+        if self.state.consecutive_losses >= getattr(self.tc, "max_consecutive_losses", 5):
+            logger.warning(
+                f"PAUSING: {self.state.consecutive_losses} consecutive losses"
+            )
+            return True
+
+        # Update peak
+        if balance > self.state.peak_balance:
+            self.state.peak_balance = balance
+
+        return False
 
     def filter_signals(
         self,
-        signals: List[TradeSignal],
+        signals: list,
         balance: float,
         available_balance: float,
         open_position_count: int,
         total_invested: float,
-        trade_history: List[dict],
-    ) -> List[TradeSignal]:
-        """
-        Filter signals through risk rules.
-        Returns only approved signals.
-        """
-        # Reset daily tracking at midnight
-        if time.time() - self._daily_reset_time > 86400:
-            self._daily_pnl = 0.0
-            self._daily_reset_time = time.time()
-            self._traded_markets.clear()
+        trade_history: list,
+    ) -> list:
+        """Filter signals that pass risk checks."""
+        self._maybe_reset_daily()
+        out = []
 
-        # Calculate daily PnL
-        daily_trades = [
-            t for t in trade_history
-            if t.get("timestamp", 0) > self._daily_reset_time
-        ]
-        self._daily_pnl = sum(t.get("pnl", 0) for t in daily_trades)
-
-        approved = []
-        starting = self.config.trading.starting_balance
-
-        for signal in signals:
-            # Rule 1: Daily loss limit
-            max_daily_loss = starting * self.config.trading.max_daily_loss_pct
-            if self._daily_pnl < -max_daily_loss:
-                logger.warning(
-                    f"⚠️ DAILY LOSS LIMIT: ${self._daily_pnl:.2f} exceeds "
-                    f"-${max_daily_loss:.2f}. Pausing trading."
-                )
-                break  # Stop all trading for the day
-
-            # Rule 2: Max concurrent positions
-            max_positions = self.config.trading.max_concurrent_positions
-            if open_position_count + len(approved) >= max_positions:
-                logger.debug(f"Max positions ({max_positions}) reached")
+        for s in signals:
+            # Max concurrent positions
+            if open_position_count >= self.tc.max_concurrent_positions:
+                logger.debug(f"SKIP (max positions): {s.market.question[:40]}")
                 continue
 
-            # Rule 3: Max total exposure (50% of balance)
-            max_exposure = balance * 0.50
-            if total_invested + signal.size > max_exposure:
-                logger.debug(f"Max exposure reached: ${total_invested:.2f}/{max_exposure:.2f}")
-                continue
-
-            # Rule 4: Position size limits
-            if signal.signal_type == SignalType.ARBITRAGE:
-                max_size = balance * 0.10  # Arb gets 10% max
-            else:
-                max_size = balance * self.config.trading.max_position_pct
-
-            if signal.size > max_size:
-                signal.size = max_size  # Cap it rather than reject
-
-            # Rule 5: Minimum size after capping
-            if signal.size < 1.0:
-                continue
-
-            # Rule 6: Must fit in available balance
-            if signal.size > available_balance:
-                signal.size = available_balance * 0.95  # Leave 5% buffer
-                if signal.size < 1.0:
-                    continue
-
-            # Rule 7: No duplicate markets (within same day)
-            if signal.market.condition_id in self._traded_markets:
-                # Allow arb re-entry but not directional
-                if signal.signal_type != SignalType.ARBITRAGE:
-                    logger.debug(f"Already traded market: {signal.market.question[:40]}")
-                    continue
-
-            # Rule 8: Minimum confidence
-            min_conf = 0.55 if signal.signal_type == SignalType.MOMENTUM else 0.50
-            if signal.confidence < min_conf:
+            # Minimum confidence
+            min_conf = getattr(self.tc, "min_confidence", 0.55)
+            if s.confidence < min_conf:
                 logger.debug(
-                    f"Low confidence {signal.confidence:.2f} < {min_conf} "
-                    f"for {signal.signal_type.value}"
+                    f"SKIP (low confidence {s.confidence:.2f}): {s.market.question[:40]}"
                 )
                 continue
 
-            # Passed all checks
-            approved.append(signal)
-            self._traded_markets.add(signal.market.condition_id)
+            # Minimum edge
+            min_edge = getattr(self.tc, "min_edge", 0.03)
+            if s.edge < min_edge:
+                logger.debug(
+                    f"SKIP (low edge {s.edge:.3f}): {s.market.question[:40]}"
+                )
+                continue
 
-        if approved:
-            logger.info(
-                f"Risk approved {len(approved)}/{len(signals)} signals | "
-                f"Daily PnL: ${self._daily_pnl:.2f} | "
-                f"Open: {open_position_count} | "
-                f"Invested: ${total_invested:.2f}"
-            )
+            # Available balance check
+            if s.size > available_balance * 0.95:
+                logger.debug(
+                    f"SKIP (insufficient balance): {s.market.question[:40]}"
+                )
+                continue
 
-        return approved
+            # Max portfolio concentration
+            max_invest = balance * getattr(self.tc, "max_invested_pct", 0.80)
+            if total_invested + s.size > max_invest:
+                logger.debug(
+                    f"SKIP (portfolio limit): {s.market.question[:40]}"
+                )
+                continue
+
+            # Daily trade count
+            max_daily = getattr(self.tc, "max_daily_trades", 50)
+            if self.state.daily_trade_count >= max_daily:
+                logger.warning(f"Daily trade limit {max_daily} reached")
+                break
+
+            out.append(s)
+
+        logger.debug(f"Risk filter: {len(signals)} -> {len(out)} signals")
+        return out
 
     def calculate_compound_size(
         self, base_size: float, balance: float, starting_balance: float
     ) -> float:
-        """
-        Adjust position size based on compounding.
-        As balance grows, position sizes grow proportionally.
-        """
-        if not self.config.trading.compound_profits:
+        """Scale position size proportionally with account growth."""
+        if starting_balance <= 0:
             return base_size
+        scale = balance / starting_balance
+        # Cap growth multiplier at 3x to avoid runaway sizing
+        scale = min(scale, 3.0)
+        new_size = base_size * scale
 
-        growth_factor = balance / starting_balance
-        # Cap compound multiplier at 3x to prevent over-leverage
-        multiplier = min(growth_factor, 3.0)
-        return base_size * multiplier
+        # Hard cap: never more than max_position_pct of balance
+        max_pos = balance * self.tc.max_position_pct
+        return round(min(new_size, max_pos), 2)
 
-    def should_pause(self, balance: float, starting_balance: float) -> bool:
-        """Check if bot should pause trading."""
-        # Pause if balance drops below 50% of starting
-        if balance < starting_balance * 0.50:
-            logger.critical(
-                f"🚨 BALANCE CRITICAL: ${balance:.2f} "
-                f"({balance/starting_balance:.0%} of starting)"
+    def record_trade_result(self, pnl: float):
+        """Call after each trade closes to update state."""
+        self._maybe_reset_daily()
+        self.state.daily_pnl += pnl
+        self.state.daily_trade_count += 1
+        if pnl < 0:
+            self.state.consecutive_losses += 1
+        else:
+            self.state.consecutive_losses = 0
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _maybe_reset_daily(self):
+        """Reset daily counters if a new calendar day has started."""
+        now = time.time()
+        if now - self._reset_time >= 86400:
+            logger.info(
+                f"Daily reset | PnL={self.state.daily_pnl:+.2f} "
+                f"| Trades={self.state.daily_trade_count}"
             )
-            return True
-
-        # Pause if daily loss limit hit
-        max_loss = starting_balance * self.config.trading.max_daily_loss_pct
-        if self._daily_pnl < -max_loss:
-            return True
-
-        return False
+            self.state.daily_pnl = 0.0
+            self.state.daily_trade_count = 0
+            self.state.consecutive_losses = 0
+            self._reset_time = now
