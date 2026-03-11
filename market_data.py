@@ -1,11 +1,9 @@
 # Kalshi Market Data Fetcher
-# Scans Kalshi weather temperature markets via the Kalshi REST API v2.
-# Replaces the old Polymarket Gamma + CLOB fetcher.
 
 import base64
 import datetime
 import logging
-import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -29,7 +27,7 @@ def _sign_request(private_key, method: str, path: str) -> dict:
         hashes.SHA256(),
     )
     return {
-        "KALSHI-ACCESS-KEY": "",   # filled in by KalshiClient
+        "KALSHI-ACCESS-KEY": "",
         "KALSHI-ACCESS-SIGNATURE": base64.b64encode(sig).decode(),
         "KALSHI-ACCESS-TIMESTAMP": ts,
         "Content-Type": "application/json",
@@ -38,7 +36,7 @@ def _sign_request(private_key, method: str, path: str) -> dict:
 
 @dataclass
 class OrderBookLevel:
-    price: float   # converted from cents to decimal (e.g. 65 -> 0.65)
+    price: float
     size: int
 
 
@@ -55,37 +53,28 @@ class OrderBook:
     def best_ask(self) -> Optional[float]:
         return self.asks[0].price if self.asks else None
 
-    @property
-    def bid_liquidity(self) -> float:
-        return sum(b.price * b.size for b in self.bids)
-
-    @property
-    def ask_liquidity(self) -> float:
-        return sum(a.price * a.size for a in self.asks)
-
 
 @dataclass
 class MarketOutcome:
-    token_id: str       # Kalshi: market ticker (YES side)
-    outcome: str        # "Yes" or "No"
-    price: float        # decimal 0.01-0.99
+    token_id: str
+    outcome: str
+    price: float
     order_book: Optional[OrderBook] = None
 
 
 @dataclass
 class Market:
-    condition_id: str       # Kalshi event ticker
+    condition_id: str
     question: str
-    slug: str               # Kalshi market ticker
+    slug: str
     outcomes: List[MarketOutcome] = field(default_factory=list)
     volume_24h: float = 0.0
     liquidity: float = 0.0
     end_date: str = ""
     active: bool = True
     tags: List[str] = field(default_factory=list)
-    resolution_source: str = "NWS Daily Climatological Report"
     series_ticker: str = ""
-    strike: float = 0.0     # temperature strike in degrees F
+    strike: float = 0.0
 
     @property
     def yes_price(self) -> Optional[float]:
@@ -118,9 +107,7 @@ class Market:
     @property
     def arb_spread(self) -> Optional[float]:
         cp = self.combined_price
-        if cp is not None:
-            return 1.0 - cp
-        return None
+        return (1.0 - cp) if cp is not None else None
 
 
 class KalshiClient:
@@ -128,16 +115,20 @@ class KalshiClient:
         self.config = config
         self.base_url = config.kalshi.active_url
         self.api_key_id = config.kalshi.api_key_id
-        # Only load the private key if we have a real key file (skip in dry-run/demo with blank placeholder)
         self._private_key = None
-        key_path = config.kalshi.private_key_path
-        if key_path and os.path.exists(key_path) and os.path.getsize(key_path) > 0:
-            with open(key_path, "rb") as f:
-                self._private_key = serialization.load_pem_private_key(f.read(), password=None)
+        # Only load key if we have a real key ID (not dry run placeholder)
+        if config.kalshi.api_key_id:
+            try:
+                with open(config.kalshi.private_key_path, "rb") as f:
+                    data = f.read()
+                if data.strip():
+                    self._private_key = serialization.load_pem_private_key(data, password=None)
+            except Exception as e:
+                logger.warning(f"Could not load private key: {e}  (dry run will still work)")
 
     def _headers(self, method: str, path: str) -> dict:
         if self._private_key is None:
-            return {}  # no auth in dry-run mode
+            return {"Content-Type": "application/json"}
         h = _sign_request(self._private_key, method, path)
         h["KALSHI-ACCESS-KEY"] = self.api_key_id
         return h
@@ -156,16 +147,10 @@ class KalshiClient:
         r.raise_for_status()
         return r.json()
 
-    async def delete(self, client: httpx.AsyncClient, path: str, body: dict = None):
-        url = self.base_url + path
-        headers = self._headers("DELETE", path)
-        r = await client.request("DELETE", url, headers=headers, json=body or {})
-        r.raise_for_status()
-        return r.json()
-
 
 class MarketDataFetcher:
     def __init__(self, config: BotConfig):
+        self.config = config
         self.client = KalshiClient(config)
         self._price_history: Dict[str, List[float]] = {}
 
@@ -188,6 +173,20 @@ class MarketDataFetcher:
         logger.info(f"Fetched {len(markets)} open Kalshi weather markets")
         return markets
 
+    async def fetch_market_with_books(self, market: Market) -> Market:
+        async with httpx.AsyncClient(timeout=15) as http:
+            try:
+                data = await self.client.get(http, f"/markets/{market.slug}/orderbook")
+                ob_raw = data.get("orderbook", {})
+                bids = [OrderBookLevel(price=p / 100.0, size=s) for p, s in ob_raw.get("yes", [])]
+                asks = [OrderBookLevel(price=p / 100.0, size=s) for p, s in ob_raw.get("no", [])]
+                ob = OrderBook(bids=bids, asks=asks)
+                for o in market.outcomes:
+                    o.order_book = ob
+            except Exception as e:
+                logger.debug(f"Orderbook fetch failed for {market.slug}: {e}")
+        return market
+
     def _parse_market(self, raw: dict, series_ticker: str) -> Optional[Market]:
         try:
             ticker = raw.get("ticker", "")
@@ -195,20 +194,15 @@ class MarketDataFetcher:
             no_cents = 100 - yes_cents
             yes_price = yes_cents / 100.0
             no_price = no_cents / 100.0
-
             outcomes = [
                 MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),
                 MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),
             ]
-
-            # Parse strike from subtitle or title e.g. "above 72 degrees"
             strike = 0.0
             title = raw.get("title", "") or raw.get("subtitle", "")
-            import re
             m = re.search(r"(\d+(?:\.\d+)?)\s*(?:degrees|deg|F)", title, re.IGNORECASE)
             if m:
                 strike = float(m.group(1))
-
             return Market(
                 condition_id=raw.get("event_ticker", series_ticker),
                 question=title,
@@ -226,20 +220,6 @@ class MarketDataFetcher:
             logger.debug(f"Failed to parse market {raw.get('ticker')}: {e}")
             return None
 
-    async def fetch_market_orderbook(self, market: Market) -> Market:
-        async with httpx.AsyncClient(timeout=15) as http:
-            try:
-                data = await self.client.get(http, f"/markets/{market.slug}/orderbook")
-                ob_raw = data.get("orderbook", {})
-                bids = [OrderBookLevel(price=p/100.0, size=s) for p, s in ob_raw.get("yes", [])]
-                asks = [OrderBookLevel(price=p/100.0, size=s) for p, s in ob_raw.get("no", [])]
-                ob = OrderBook(bids=bids, asks=asks)
-                for o in market.outcomes:
-                    o.order_book = ob
-            except Exception as e:
-                logger.debug(f"Orderbook fetch failed for {market.slug}: {e}")
-        return market
-
     def record_price(self, token_id: str, price: float):
         if token_id not in self._price_history:
             self._price_history[token_id] = []
@@ -249,3 +229,6 @@ class MarketDataFetcher:
 
     def get_price_history(self, token_id: str, lookback: int = 20) -> List[float]:
         return self._price_history.get(token_id, [])[-lookback:]
+
+    async def close(self):
+        pass
