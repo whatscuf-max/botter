@@ -1,18 +1,21 @@
-"""
-Trade Executor - sell commands, unlimited positions, data-driven exits
-"""
+# Kalshi Trade Executor
+# Handles order placement and position management via the Kalshi REST API v2.
+# Replaces the old py-clob-client based Polymarket executor.
 
+import asyncio
+import datetime
 import logging
-import re
-import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional
 
-from strategies import Side, TradeSignal, SignalType
+import httpx
 
-logger = logging.getLogger("polymarket_bot.executor")
+from config import BotConfig
+from market_data import KalshiClient, Market
+
+logger = logging.getLogger("kalshi_bot.executor")
 
 
 class OrderStatus(Enum):
@@ -22,354 +25,196 @@ class OrderStatus(Enum):
     FAILED = "failed"
 
 
+class Side(Enum):
+    YES = "yes"
+    NO = "no"
+
+
 @dataclass
 class Order:
     order_id: str
-    signal: TradeSignal
+    ticker: str
+    side: Side
+    count: int          # number of contracts (1 contract = $0.01 min, settles at $1)
+    yes_price: int      # price in cents (1-99)
     status: OrderStatus = OrderStatus.PENDING
-    fill_price: float = 0.0
-    fill_size: float = 0.0
-    fee: float = 0.0
-    created_at: float = field(default_factory=time.time)
-    filled_at: Optional[float] = None
-    error: str = ""
+    filled_count: int = 0
+    ts: str = field(default_factory=lambda: datetime.datetime.utcnow().isoformat())
 
 
 @dataclass
 class Position:
-    id: int
-    market_condition_id: str
+    market_slug: str
     question: str
-    token_id: str
-    outcome: str
-    entry_price: float
-    size: float
-    cost: float
-    signal_type: str
-    reasoning: str
-    confidence: float
-    forecast_temp: float = 0.0
-    forecast_unit: str = ""
-    temp_range_low: float = 0.0
-    temp_range_high: float = 0.0
-    city: str = ""
-    opened_at: float = field(default_factory=time.time)
-    closed_at: Optional[float] = None
-    exit_price: Optional[float] = None
-    exit_reason: str = ""
+    side: Side
+    contracts: int
+    entry_price: float          # decimal
+    current_price: float = 0.0
     pnl: float = 0.0
+    entry_ts: str = field(default_factory=lambda: datetime.datetime.utcnow().isoformat())
+    forecast_temp: float = 0.0
+    strike_temp: float = 0.0
+    series_ticker: str = ""
 
     @property
-    def is_open(self):
-        return self.closed_at is None
+    def cost_basis(self) -> float:
+        return self.entry_price * self.contracts
 
     @property
-    def age_str(self):
-        mins = (time.time() - self.opened_at) / 60
-        if mins < 60:
-            return f"{mins:.0f}m"
-        hrs = mins / 60
-        if hrs < 24:
-            return f"{hrs:.1f}h"
-        return f"{hrs / 24:.1f}d"
+    def age_seconds(self) -> float:
+        try:
+            dt = datetime.datetime.fromisoformat(self.entry_ts)
+            return (datetime.datetime.utcnow() - dt).total_seconds()
+        except Exception:
+            return 0.0
 
-    def unrealized_pnl(self, cp):
-        return (cp - self.entry_price) * self.size
-
-    def unrealized_pnl_pct(self, cp):
-        return (cp - self.entry_price) / self.entry_price if self.entry_price else 0
+    def update_pnl(self):
+        self.pnl = (self.current_price - self.entry_price) * self.contracts
 
 
 class TradeExecutor:
-    def __init__(self, config, clob_client=None):
+    def __init__(self, config: BotConfig):
         self.config = config
         self.dry_run = config.dry_run
-        self.clob_client = clob_client
-        self.orders = {}
+        self.balance = config.trading.starting_balance
+        self._client = KalshiClient(config)
         self.positions: Dict[str, Position] = {}
-        self.trade_history: List[dict] = []
-        self._paper_balance = config.trading.starting_balance
-        self._starting_balance = config.trading.starting_balance
-        self._next_id = 1
-        self._current_prices: Dict[str, float] = {}
+        self.order_history: List[Order] = []
+        self.daily_pnl: float = 0.0
+        self.total_pnl: float = 0.0
 
-    @property
-    def balance(self):
-        return self._paper_balance
+    # ------------------------------------------------------------------
+    # Order placement
+    # ------------------------------------------------------------------
 
-    @property
-    def open_positions(self):
-        return sorted(
-            [p for p in self.positions.values() if p.is_open], key=lambda p: p.id
+    async def place_order(
+        self,
+        market: Market,
+        side: Side,
+        contracts: int,
+        yes_price_cents: int,
+    ) -> Optional[Order]:
+        order_id = str(uuid.uuid4())
+        order = Order(
+            order_id=order_id,
+            ticker=market.slug,
+            side=side,
+            count=contracts,
+            yes_price=yes_price_cents,
         )
 
-    @property
-    def total_invested(self):
-        return sum(p.cost for p in self.open_positions)
-
-    @property
-    def total_pnl(self):
-        return sum(t.get("pnl", 0) for t in self.trade_history if t.get("type") == "close")
-
-    @property
-    def available_balance(self):
-        return self.balance - self.total_invested
-
-    def update_prices(self, prices):
-        self._current_prices.update(prices)
-
-    def sell_position(self, pos_id: int) -> str:
-        for tid, pos in self.positions.items():
-            if pos.id == pos_id and pos.is_open:
-                cp = self._current_prices.get(tid, pos.entry_price)
-                pos.exit_price = cp
-                pos.pnl = (cp - pos.entry_price) * pos.size
-                pos.closed_at = time.time()
-                pos.exit_reason = "Manual sell"
-                self._paper_balance += cp * pos.size
-                self._record_close(pos)
-                pnl_s = f"+${pos.pnl:.2f}" if pos.pnl >= 0 else f"-${abs(pos.pnl):.2f}"
-                return f"SOLD #{pos.id}: {pos.question[:60]} | PnL: {pnl_s}"
-        return f"Position #{pos_id} not found."
-
-    def sell_all(self) -> str:
-        if not self.open_positions:
-            return "No open positions."
-        lines = []
-        for pos in list(self.open_positions):
-            cp = self._current_prices.get(pos.token_id, pos.entry_price)
-            pos.exit_price = cp
-            pos.pnl = (cp - pos.entry_price) * pos.size
-            pos.closed_at = time.time()
-            pos.exit_reason = "Manual sell all"
-            self._paper_balance += cp * pos.size
-            self._record_close(pos)
-            pnl_s = f"+${pos.pnl:.2f}" if pos.pnl >= 0 else f"-${abs(pos.pnl):.2f}"
-            lines.append(f"  SOLD #{pos.id}: {pos.question[:50]} | {pnl_s}")
-        return "\n".join(lines) + f"\n  Balance: ${self.balance:.2f}"
-
-    async def execute_signal(self, signal: TradeSignal) -> Optional[Order]:
-        if not self._validate(signal):
-            return None
-        if signal.signal_type == SignalType.ARBITRAGE and signal.paired_signal:
-            yo = await self._exec(signal)
-            if yo and yo.status == OrderStatus.FILLED:
-                await self._exec(signal.paired_signal)
-            return yo
-        return await self._exec(signal)
-
-    async def _exec(self, signal) -> Order:
-        order = Order(order_id=str(uuid.uuid4())[:8], signal=signal)
-        if not self.dry_run and self.clob_client:
-            return await self._live(order)
-        return await self._paper(order)
-
-    async def _paper(self, order) -> Order:
-        sig = order.signal
-        shares = sig.size / sig.price if sig.price > 0 else 0
-        fp = sig.price * 1.001
-        cost = shares * fp
-        if cost > self.available_balance:
-            order.status = OrderStatus.FAILED
+        if self.dry_run:
+            logger.info(
+                f"[DRY RUN] BUY {contracts}x {market.slug} {side.value.upper()} "
+                f"@ {yes_price_cents}c  |  Q: {market.question}"
+            )
+            order.status = OrderStatus.FILLED
+            order.filled_count = contracts
+            self._record_position(market, side, contracts, yes_price_cents / 100.0)
+            self.order_history.append(order)
             return order
-        order.status = OrderStatus.FILLED
-        order.fill_price = fp
-        order.fill_size = shares
-        order.filled_at = time.time()
-        self._paper_balance -= cost + cost * 0.001
 
-        pid = self._next_id
-        self._next_id += 1
-        pos = Position(
-            id=pid,
-            market_condition_id=sig.market.condition_id,
-            question=sig.market.question,
-            token_id=sig.token_id,
-            outcome=sig.outcome,
-            entry_price=fp,
-            size=shares,
-            cost=cost,
-            signal_type=sig.signal_type.value,
-            reasoning=sig.reasoning,
-            confidence=sig.confidence,
-        )
-
-        # FIX 5: Parse weather temp from reasoning — handles both FCST and OBS formats
-        # Matches: "Forecast=46F", "Forecast=46.9F", "Forecast=46C", "Forecast=46.9C"
-        tm = re.search(r'Forecast=([\d.]+)[FC]', sig.reasoning)
-        if tm:
-            pos.forecast_temp = float(tm.group(1))
-
-        rm = re.search(r'Range=(\d+)-(\d+)', sig.reasoning)
-        if rm:
-            pos.temp_range_low = float(rm.group(1))
-            pos.temp_range_high = float(rm.group(2))
-
-        um = re.search(r'Range=\d+-\d+([FC])', sig.reasoning)
-        if um:
-            pos.forecast_unit = um.group(1)
-
-        for c in [
-            "new york", "london", "paris", "seoul", "ankara", "lucknow",
-            "wellington", "munich", "sao paulo", "buenos aires", "toronto",
-            "miami", "atlanta", "chicago", "seattle", "dallas",
-        ]:
-            if c in sig.market.question.lower():
-                pos.city = c.title()
-                break
-
-        self.positions[sig.token_id] = pos
-        self.trade_history.append({
-            "order_id": order.order_id,
-            "signal_type": sig.signal_type.value,
-            "market": pos.question,
-            "outcome": pos.outcome,
-            "price": fp,
-            "shares": shares,
-            "cost": cost,
-            "reasoning": pos.reasoning,
-            "confidence": pos.confidence,
-            "timestamp": time.time(),
-            "balance_after": self.balance,
-        })
-        logger.info(f"FILL #{pid}: {sig.outcome} {shares:.0f}sh @ ${fp:.4f} = ${cost:.2f}")
-        return order
-
-    async def _live(self, order) -> Order:
-        sig = order.signal
+        # Live order
+        body = {
+            "ticker": market.slug,
+            "action": "buy",
+            "side": side.value,
+            "type": "limit",
+            "count": contracts,
+            "yes_price": yes_price_cents,
+            "client_order_id": order_id,
+        }
         try:
-            from py_clob_client.order_builder.constants import BUY, SELL
-            shares = sig.size / sig.price if sig.price > 0 else 0
-            resp = self.clob_client.create_and_post_order({
-                "token_id": sig.token_id,
-                "price": sig.price,
-                "size": shares,
-                "side": BUY if sig.side == Side.BUY else SELL,
-            })
-            if resp and resp.get("success"):
-                order.status = OrderStatus.FILLED
-                order.fill_price = sig.price
-                order.fill_size = shares
-                order.filled_at = time.time()
-                self._paper_balance -= shares * sig.price
-                pid = self._next_id
-                self._next_id += 1
-                pos = Position(
-                    id=pid,
-                    market_condition_id=sig.market.condition_id,
-                    question=sig.market.question,
-                    token_id=sig.token_id,
-                    outcome=sig.outcome,
-                    entry_price=sig.price,
-                    size=shares,
-                    cost=shares * sig.price,
-                    signal_type=sig.signal_type.value,
-                    reasoning=sig.reasoning,
-                    confidence=sig.confidence,
-                )
-                self.positions[sig.token_id] = pos
-            else:
-                order.status = OrderStatus.FAILED
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await self._client.post(http, "/portfolio/orders", body)
+            kalshi_order = resp.get("order", {})
+            status_str = kalshi_order.get("status", "")
+            order.status = OrderStatus.FILLED if "filled" in status_str else OrderStatus.PENDING
+            order.filled_count = kalshi_order.get("filled_count", 0)
+            if order.filled_count > 0:
+                self._record_position(market, side, order.filled_count, yes_price_cents / 100.0)
+            self.order_history.append(order)
+            logger.info(f"Order placed: {order.order_id} status={order.status.value}")
+            return order
         except Exception as e:
+            logger.error(f"Order failed for {market.slug}: {e}")
             order.status = OrderStatus.FAILED
-            order.error = str(e)
-        return order
+            self.order_history.append(order)
+            return order
 
-    async def evaluate_positions_with_data(
-        self, current_prices, crypto_direction, crypto_confidence, weather_forecasts
-    ):
-        closed = []
-        for tid, pos in list(self.positions.items()):
-            # FIX 5: pos.forecast_temp == 0 means temp was never parsed — skip non-weather
-            if not pos.is_open or pos.forecast_temp == 0:
-                continue
-            city = None
-            q = pos.question.lower()
-            for c in weather_forecasts:
-                if c.lower() in q:
-                    city = c
-                    break
-            if not city or city not in weather_forecasts:
-                continue
-            fc = weather_forecasts[city]
-            new_temp = fc.get("temp_f", 0) if pos.forecast_unit == "F" else fc.get("temp_c", 0)
-            if new_temp == 0:
-                continue
-            shift = abs(new_temp - pos.forecast_temp)
-            if shift < 3.0:
-                continue
-            range_mid = (pos.temp_range_low + pos.temp_range_high) / 2
-            should_exit = False
-            reason = ""
-            if pos.outcome == "Yes":
-                new_dist = abs(new_temp - range_mid)
-                if new_dist > 4.0:
-                    should_exit = True
-                    reason = f"Forecast {pos.forecast_temp:.1f}->{new_temp:.1f} (now {new_dist:.1f} from range)"
-            elif pos.outcome == "No":
-                if pos.temp_range_low <= new_temp <= pos.temp_range_high:
-                    should_exit = True
-                    reason = f"Forecast {pos.forecast_temp:.1f}->{new_temp:.1f} (now IN range)"
-            if should_exit:
-                cp = current_prices.get(tid, pos.entry_price)
-                pos.exit_price = cp
-                pos.pnl = (cp - pos.entry_price) * pos.size
-                pos.closed_at = time.time()
-                pos.exit_reason = reason
-                self._paper_balance += cp * pos.size
-                closed.append(pos)
-                self._record_close(pos)
-        return closed
+    # ------------------------------------------------------------------
+    # Position management
+    # ------------------------------------------------------------------
 
-    def _validate(self, sig):
-        if sig.size < 0.50 or sig.price <= 0 or sig.price >= 1.0:
-            return False
-        if len(self.open_positions) >= self.config.trading.max_concurrent_positions:
-            return False
-        if sig.size > self.available_balance:
-            return False
-        return True
-
-    def _record_close(self, pos):
-        self.trade_history.append({
-            "type": "close",
-            "market": pos.question,
-            "outcome": pos.outcome,
-            "exit_reason": pos.exit_reason,
-            "pnl": pos.pnl,
-            "entry": pos.entry_price,
-            "exit": pos.exit_price,
-            "timestamp": time.time(),
-            "balance_after": self.balance,
-        })
-        pnl_s = f"+${pos.pnl:.2f}" if pos.pnl >= 0 else f"-${abs(pos.pnl):.2f}"
-        logger.info(
-            f"CLOSE #{pos.id}: {pos.question[:50]} | {pos.outcome} | "
-            f"PnL={pnl_s} | reason={pos.exit_reason}"
+    def _record_position(self, market: Market, side: Side, contracts: int, price: float):
+        pos = Position(
+            market_slug=market.slug,
+            question=market.question,
+            side=side,
+            contracts=contracts,
+            entry_price=price,
+            current_price=price,
+            strike_temp=market.strike,
+            series_ticker=market.series_ticker,
         )
+        self.positions[market.slug] = pos
+        cost = price * contracts
+        self.balance -= cost
+        logger.info(f"Position opened: {market.slug} {side.value} x{contracts} @ {price:.2f}  balance=${self.balance:.2f}")
+
+    async def sell_position(self, market_slug: str, current_price: float) -> float:
+        pos = self.positions.get(market_slug)
+        if not pos:
+            return 0.0
+
+        pos.current_price = current_price
+        pos.update_pnl()
+        proceeds = current_price * pos.contracts
+
+        if self.dry_run:
+            logger.info(
+                f"[DRY RUN] SELL {pos.contracts}x {market_slug} @ {current_price:.2f}  "
+                f"PnL=${pos.pnl:+.2f}"
+            )
+        else:
+            sell_side = Side.NO if pos.side == Side.YES else Side.YES
+            sell_price_cents = int(current_price * 100)
+            body = {
+                "ticker": market_slug,
+                "action": "sell",
+                "side": pos.side.value,
+                "type": "limit",
+                "count": pos.contracts,
+                "yes_price": sell_price_cents,
+                "client_order_id": str(uuid.uuid4()),
+            }
+            try:
+                async with httpx.AsyncClient(timeout=15) as http:
+                    await self._client.post(http, "/portfolio/orders", body)
+            except Exception as e:
+                logger.error(f"Sell failed for {market_slug}: {e}")
+
+        self.balance += proceeds
+        self.daily_pnl += pos.pnl
+        self.total_pnl += pos.pnl
+        del self.positions[market_slug]
+        return pos.pnl
+
+    async def sell_all(self, market_prices: Dict[str, float]):
+        for slug in list(self.positions.keys()):
+            price = market_prices.get(slug, self.positions[slug].entry_price)
+            await self.sell_position(slug, price)
+
+    def update_position_prices(self, market_slug: str, current_price: float):
+        if market_slug in self.positions:
+            self.positions[market_slug].current_price = current_price
+            self.positions[market_slug].update_pnl()
 
     def get_summary(self) -> dict:
-        """Return a snapshot dict consumed by bot.py _report() and _save()."""
-        closed = [t for t in self.trade_history if t.get("type") == "close"]
-        wins = sum(1 for t in closed if t.get("pnl", 0) > 0)
-        win_rate = (wins / len(closed) * 100) if closed else 0.0
-        unrealized = sum(
-            (self._current_prices.get(p.token_id, p.entry_price) - p.entry_price) * p.size
-            for p in self.open_positions
-        )
-        pnl_pct = (
-            (self.balance - self._starting_balance) / self._starting_balance * 100
-            if self._starting_balance else 0.0
-        )
         return {
-            "balance": self.balance,
-            "starting_balance": self._starting_balance,
-            "total_pnl": self.total_pnl,
-            "pnl_pct": pnl_pct,
-            "unrealized_pnl": unrealized,
-            "total_trades": len(closed),
-            "win_rate": win_rate,
-            "open_positions": len(self.open_positions),
-            "total_invested": self.total_invested,
-            "available": self.available_balance,
+            "balance": round(self.balance, 2),
+            "open_positions": len(self.positions),
+            "daily_pnl": round(self.daily_pnl, 2),
+            "total_pnl": round(self.total_pnl, 2),
+            "dry_run": self.dry_run,
         }
