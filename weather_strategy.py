@@ -509,18 +509,17 @@ class WeatherStrategy:
         if not parsed:
             return signals
 
-        # Fetch forecasts — one call per city, passing the correct target_date
-        cities_needed = set(p.city for _, p in parsed)
-        forecasts: Dict[str, dict] = {}
-        for city in cities_needed:
-            city_parsed = [p for _, p in parsed if p.city == city]
-            target_date = city_parsed[0].target_date if city_parsed else None
+        # Fetch forecasts — keyed by (city, target_date) so each market date gets
+        # the correct forecast, not just the first date found for that city.
+        city_dates_needed = set((p.city, p.target_date) for _, p in parsed)
+        forecasts: Dict[Tuple[str, Optional[str]], dict] = {}
+        for city, target_date in city_dates_needed:
             fc = await self.fetcher.get_forecast(city, target_date=target_date)
             if fc:
-                forecasts[city] = fc
+                forecasts[(city, target_date)] = fc
             await asyncio.sleep(0.2)
 
-        logger.info(f"Forecasts: {len(forecasts)}/{len(cities_needed)} cities")
+        logger.info(f"Forecasts: {len(forecasts)}/{len(city_dates_needed)} city-date pairs")
 
         for mkt, p in parsed:
             # Skip markets resolving today or earlier
@@ -534,7 +533,7 @@ class WeatherStrategy:
                 except Exception:
                     pass
 
-            fc = forecasts.get(p.city)
+            fc = forecasts.get((p.city, p.target_date))
             if not fc:
                 continue
 
