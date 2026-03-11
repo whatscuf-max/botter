@@ -116,41 +116,6 @@ class MarketDataFetcher:
     async def close(self):
         await self._client.aclose()
 
-    async def fetch_active_markets(self, limit: int = 500, order: str = "volume24hr",
-                                    ascending: bool = False, offset: int = 0) -> List[Market]:
-        """Fetch active markets sorted by volume. Supports offset for pagination."""
-        params = {
-            "active": "true",
-            "closed": "false",
-            "limit": str(limit),
-            "order": order,
-            "ascending": str(ascending).lower(),
-        }
-        if offset > 0:
-            params["offset"] = str(offset)
-
-        try:
-            resp = await self._client.get(f"{self.gamma_host}/markets", params=params)
-            resp.raise_for_status()
-            raw_markets = resp.json()
-        except Exception as e:
-            logger.error(f"Failed to fetch markets: {e}")
-            return []
-
-        markets = []
-        for rm in raw_markets:
-            try:
-                market = self._parse_gamma_market(rm)
-                if market:
-                    markets.append(market)
-                    self._market_cache[market.condition_id] = market
-            except Exception as e:
-                logger.debug(f"Skipping malformed market: {e}")
-
-        page_label = f"offset={offset}" if offset > 0 else "page 1"
-        logger.info(f"Fetched {len(markets)} markets ({page_label}, sorted by {order})")
-        return markets
-
     def _parse_gamma_market(self, raw: dict) -> Optional[Market]:
         outcomes_raw = raw.get("outcomes", "[]")
         prices_raw = raw.get("outcomePrices", "[]")
@@ -216,64 +181,14 @@ class MarketDataFetcher:
             active=raw.get("active", True),
         )
 
-    async def fetch_order_book(self, token_id: str) -> OrderBook:
-        try:
-            resp = await self._client.get(
-                f"{self.clob_host}/book", params={"token_id": token_id},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            logger.debug(f"Order book fetch failed: {e}")
-            return OrderBook()
-
-        bids = [OrderBookLevel(price=float(b["price"]), size=float(b["size"]))
-                for b in data.get("bids", [])]
-        asks = [OrderBookLevel(price=float(a["price"]), size=float(a["size"]))
-                for a in data.get("asks", [])]
-        bids.sort(key=lambda x: x.price, reverse=True)
-        asks.sort(key=lambda x: x.price)
-        return OrderBook(bids=bids, asks=asks)
-
-    async def fetch_market_with_books(self, market: Market) -> Market:
-        for outcome in market.outcomes:
-            if outcome.token_id:
-                outcome.order_book = await self.fetch_order_book(outcome.token_id)
-                if outcome.order_book.best_ask is not None:
-                    outcome.price = outcome.order_book.best_ask
-        return market
-
     def record_price(self, token_id: str, price: float):
         now = time.time()
         if token_id not in self._price_history:
             self._price_history[token_id] = []
         self._price_history[token_id].append((now, price))
-        if len(self._price_history[token_id]) > 1000:
+        if len(self._price_history[token_id]) > 500:
             self._price_history[token_id] = self._price_history[token_id][-500:]
 
     def get_price_history(self, token_id: str, lookback: int = 50) -> List[float]:
         history = self._price_history.get(token_id, [])
         return [p for _, p in history[-lookback:]]
-
-    async def fetch_btc_price(self) -> Optional[float]:
-        try:
-            resp = await self._client.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": "bitcoin", "vs_currencies": "usd"},
-            )
-            resp.raise_for_status()
-            return float(resp.json()["bitcoin"]["usd"])
-        except Exception:
-            return None
-
-    async def fetch_btc_ohlc(self, days: int = 1) -> List[dict]:
-        try:
-            resp = await self._client.get(
-                "https://api.coingecko.com/api/v3/coins/bitcoin/ohlc",
-                params={"vs_currency": "usd", "days": str(days)},
-            )
-            resp.raise_for_status()
-            return [{"timestamp": r[0], "open": r[1], "high": r[2],
-                     "low": r[3], "close": r[4]} for r in resp.json()]
-        except Exception:
-            return []
