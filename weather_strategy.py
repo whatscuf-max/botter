@@ -327,7 +327,7 @@ class ForecastFetcher:
             hourly_times = data.get("hourly", {}).get("time", [])
 
             date_str = target_date if target_date else (
-                daily_dates[1] if len(daily_dates) >= 2 else None
+                daily_dates[0] if len(daily_dates) >= 1 else None
             )
             if not date_str:
                 return None
@@ -554,7 +554,7 @@ class WeatherStrategy:
             elif p.is_or_higher:
                 forecast_says_yes = forecast_temp >= p.temp_high
             else:
-                forecast_says_yes = (p.temp_low <= forecast_temp <= p.temp_high) or distance <= 1.0
+                forecast_says_yes = (p.temp_low <= forecast_temp <= p.temp_high)
 
             # Step 2: base conviction from distance
             if forecast_says_yes:
