@@ -20,7 +20,8 @@ from market_data import MarketDataFetcher
 from strategies import StrategyEngine, is_weather_market
 from executor import TradeExecutor
 from risk_manager import RiskManager
-from weather_strategy import WeatherStrategy, KALSHI_WEATHER_SERIES
+from weather_strategy import WeatherStrategy
+from config import KALSHI_WEATHER_SERIES
 
 
 class RingBufferHandler(logging.Handler):
