@@ -181,6 +181,63 @@ class MarketDataFetcher:
             active=raw.get("active", True),
         )
 
+    async def fetch_active_markets(
+        self,
+        limit: int = 500,
+        order: str = "volume24hr",
+        ascending: bool = False,
+        offset: int = 0,
+    ) -> List[Market]:
+        params = {
+            "limit": limit,
+            "offset": offset,
+            "order": order,
+            "ascending": "true" if ascending else "false",
+            "active": "true",
+            "closed": "false",
+        }
+        try:
+            r = await self._client.get(f"{self.gamma_host}/markets", params=params)
+            r.raise_for_status()
+            raw_list = r.json()
+            if isinstance(raw_list, dict):
+                raw_list = raw_list.get("markets", [])
+            markets = []
+            for raw in raw_list:
+                m = self._parse_gamma_market(raw)
+                if m:
+                    self._market_cache[m.condition_id] = m
+                    markets.append(m)
+            return markets
+        except Exception as e:
+            logger.error(f"fetch_active_markets error: {e}")
+            return []
+
+    async def fetch_market_with_books(self, market: Market) -> Market:
+        """Enrich a Market with live order book data from the CLOB API."""
+        for outcome in market.outcomes:
+            if not outcome.token_id:
+                continue
+            try:
+                r = await self._client.get(
+                    f"{self.clob_host}/book",
+                    params={"token_id": outcome.token_id},
+                )
+                r.raise_for_status()
+                data = r.json()
+                bids = [
+                    OrderBookLevel(price=float(b["price"]), size=float(b["size"]))
+                    for b in data.get("bids", [])
+                ]
+                asks = [
+                    OrderBookLevel(price=float(a["price"]), size=float(a["size"]))
+                    for a in data.get("asks", [])
+                ]
+                outcome.order_book = OrderBook(bids=bids, asks=asks)
+            except Exception as e:
+                logger.debug(f"fetch_market_with_books error for {outcome.token_id}: {e}")
+        return market
+
     def record_price(self, token_id: str, price: float):
         now = time.time()
         if token_id not in self._price_history:
