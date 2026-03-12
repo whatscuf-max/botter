@@ -113,7 +113,9 @@ class ParsedWeatherMarket:
 
 def parse_weather_question(question: str) -> Optional[ParsedWeatherMarket]:
     q = question.lower()
-    if "temperature" not in q:
+    # Kalshi titles use "high temp", "highest temperature", "temp in" etc.
+    weather_keywords = ["temperature", "temp", "high temp", "highest temp"]
+    if not any(kw in q for kw in weather_keywords):
         return None
     city = None
     for name in sorted(AIRPORTS.keys(), key=len, reverse=True):
@@ -346,9 +348,9 @@ class ForecastFetcher:
                 return None
 
             if hourly_temps and hourly_times:
-                day_temps = [
-                    t for ts, t in zip(hourly_times, hourly_temps)
-                    if ts.startswith(date_str) and t is not None
+                day_temps = [\
+                    t for ts, t in zip(hourly_times, hourly_temps)\
+                    if ts.startswith(date_str) and t is not None\
                 ]
                 if day_temps:
                     return float(max(day_temps))
