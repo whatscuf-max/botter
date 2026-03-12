@@ -3,9 +3,7 @@
 import base64
 import datetime
 import logging
-import os
 import re
-import textwrap
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -18,7 +16,7 @@ from config import BotConfig, KALSHI_WEATHER_SERIES
 
 logger = logging.getLogger("kalshi_bot.markets")
 
-def _sign_request(private_key, key_id: str, method: str, path: str) -> dict:
+def _sign_request(private_key, method: str, path: str) -> dict:
     ts = str(int(datetime.datetime.now().timestamp() * 1000))
     clean_path = path.split("?")[0]
     msg = f"{ts}{method}{clean_path}".encode()
@@ -28,7 +26,7 @@ def _sign_request(private_key, key_id: str, method: str, path: str) -> dict:
         hashes.SHA256(),
     )
     return {
-        "KALSHI-ACCESS-KEY": key_id,
+        "KALSHI-ACCESS-KEY": "",
         "KALSHI-ACCESS-SIGNATURE": base64.b64encode(sig).decode(),
         "KALSHI-ACCESS-TIMESTAMP": ts,
         "Content-Type": "application/json",
@@ -109,37 +107,10 @@ class Market:
 # Alias for backwards compatibility
 KalshiMarket = Market
 
-def _load_private_key(config: BotConfig):
-    """Try to load private key from env string first, then fall back to .pem file."""
-    # 1. Try env string
-    key_str = config.kalshi.private_key_str
-    if key_str:
-        # Strip any existing headers/footers and whitespace
-        raw = re.sub(r"-----BEGIN [^-]+-----|-----END [^-]+-----", "", key_str)
-        raw = re.sub(r"\s+", "", raw)
-        # Re-wrap to 64-char lines
-        wrapped = textwrap.fill(raw, 64)
-        pem = f"-----BEGIN RSA PRIVATE KEY-----\n{wrapped}\n-----END RSA PRIVATE KEY-----\n"
-        try:
-            key = serialization.load_pem_private_key(pem.encode(), password=None)
-            logger.info("Loaded Kalshi private key from environment string")
-            return key
-        except Exception as e:
-            logger.warning(f"Could not parse KALSHI_PRIVATE_KEY string: {e}")
-
-    # 2. Fall back to .pem file
-    key_path = config.kalshi.private_key_path
-    try:
-        with open(key_path, "rb") as f:
-            data = f.read()
-        if data.strip():
-            key = serialization.load_pem_private_key(data, password=None)
-            logger.info(f"Loaded Kalshi private key from file: {key_path}")
-            return key
-    except Exception as e:
-        logger.warning(f"Could not load private key: {e}  (dry run will still work)")
-
-    return None
+def _load_private_key_from_str(key_str: str):
+    """Normalize \\n escape sequences in a PEM key string and load it."""
+    key_str = key_str.replace('\\\\n', '\n').replace('\\n', '\n')
+    return serialization.load_pem_private_key(key_str.encode("utf-8"), password=None)
 
 class KalshiClient:
     def __init__(self, config: BotConfig):
@@ -147,13 +118,24 @@ class KalshiClient:
         self.base_url = config.kalshi.active_url
         self.api_key_id = config.kalshi.api_key_id
         self._private_key = None
+        # Only load key if we have a real key ID (not dry run placeholder)
         if config.kalshi.api_key_id:
-            self._private_key = _load_private_key(config)
+            try:
+                with open(config.kalshi.private_key_path, "rb") as f:
+                    data = f.read()
+                if data.strip():
+                    key_str = data.decode("utf-8")
+                    key_str = key_str.replace('\\\\n', '\n').replace('\\n', '\n')
+                    self._private_key = serialization.load_pem_private_key(key_str.encode("utf-8"), password=None)
+            except Exception as e:
+                logger.warning(f"Could not load private key: {e}  (dry run will still work)")
 
     def _headers(self, method: str, path: str) -> dict:
         if self._private_key is None:
             return {"Content-Type": "application/json"}
-        return _sign_request(self._private_key, self.api_key_id, method, path)
+        h = _sign_request(self._private_key, method, path)
+        h["KALSHI-ACCESS-KEY"] = self.api_key_id
+        return h
 
     async def get(self, client: httpx.AsyncClient, path: str, params: dict = None):
         url = self.base_url + path
@@ -215,9 +197,9 @@ class MarketDataFetcher:
             no_cents = 100 - yes_cents
             yes_price = yes_cents / 100.0
             no_price = no_cents / 100.0
-            outcomes = [
-                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),
-                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),
+            outcomes = [\
+                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),\
+                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),\
             ]
             strike = 0.0
             title = raw.get("title", "") or raw.get("subtitle", "")
