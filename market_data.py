@@ -166,20 +166,24 @@ class MarketDataFetcher:
         self.client = KalshiClient(config)
         self._price_history: Dict[str, List[float]] = {}
 
-    async def fetch_active_markets(self, limit: int = 100) -> List[Market]:
+    async def fetch_active_markets(self, limit: int = 200) -> List[Market]:
         markets = []
         async with httpx.AsyncClient(timeout=30) as http:
             for series_ticker, info in KALSHI_WEATHER_SERIES.items():
+                cursor = None
                 try:
-                    data = await self.client.get(
-                        http,
-                        "/markets",
-                        params={"series_ticker": series_ticker, "status": "open", "limit": limit},
-                    )
-                    for m in data.get("markets", []):
-                        market = self._parse_market(m, series_ticker)
-                        if market:
-                            markets.append(market)
+                    while True:
+                        params = {"series_ticker": series_ticker, "status": "open", "limit": limit}
+                        if cursor:
+                            params["cursor"] = cursor
+                        data = await self.client.get(http, "/markets", params=params)
+                        for m in data.get("markets", []):
+                            market = self._parse_market(m, series_ticker)
+                            if market:
+                                markets.append(market)
+                        cursor = data.get("cursor")
+                        if not cursor:
+                            break
                 except Exception as e:
                     logger.warning(f"Failed to fetch {series_ticker}: {e}")
         logger.info(f"Fetched {len(markets)} open Kalshi weather markets")
@@ -206,9 +210,9 @@ class MarketDataFetcher:
             no_cents = 100 - yes_cents
             yes_price = yes_cents / 100.0
             no_price = no_cents / 100.0
-            outcomes = [\
-                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),\
-                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),\
+            outcomes = [
+                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),
+                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),
             ]
             strike = 0.0
             title = raw.get("title", "") or raw.get("subtitle", "")
