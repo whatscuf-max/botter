@@ -6,7 +6,7 @@ from enum import Enum
 from typing import List, Optional
 
 from config import KALSHI_WEATHER_SERIES
-from market_data import Market
+from market_data import KalshiMarket as Market
 
 logger = logging.getLogger("kalshi_bot.strategies")
 
