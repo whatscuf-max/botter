@@ -11,10 +11,9 @@ from typing import Dict, List, Optional
 import httpx
 
 from config import BotConfig
-from market_data import KalshiClient, Market
+from market_data import KalshiClient, KalshiMarket as Market
 
 logger = logging.getLogger("kalshi_bot.executor")
-
 
 class OrderStatus(Enum):
     PENDING   = "pending"
@@ -22,11 +21,9 @@ class OrderStatus(Enum):
     CANCELLED = "cancelled"
     FAILED    = "failed"
 
-
 class Side(Enum):
     YES = "yes"
     NO  = "no"
-
 
 @dataclass
 class Order:
@@ -38,7 +35,6 @@ class Order:
     status: OrderStatus = OrderStatus.PENDING
     filled_count: int = 0
     ts: str = field(default_factory=lambda: datetime.datetime.utcnow().isoformat())
-
 
 @dataclass
 class Position:
@@ -66,7 +62,6 @@ class Position:
     def update_pnl(self, current_price: float = None):
         p = current_price if current_price is not None else self.current_price
         self.pnl = (p - self.entry_price) * self.size
-
 
 class TradeExecutor:
     def __init__(self, config: BotConfig):
