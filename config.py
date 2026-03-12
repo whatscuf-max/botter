@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 @dataclass
 class KalshiConfig:
     api_key_id: str = ""
-    private_key_path: str = ""
     private_key_str: str = ""
+    private_key_path: str = ""
     base_url: str = "https://trading-api.kalshi.com/trade-api/v2"
     demo_url: str = "https://demo-api.kalshi.co/trade-api/v2"
     use_demo: bool = False
@@ -44,16 +44,15 @@ class BotConfig:
     @classmethod
     def from_env(cls):
         c = cls()
-        c.kalshi.api_key_id      = os.getenv("KALSHI_API_KEY_ID", "")
+        c.kalshi.api_key_id = os.getenv("KALSHI_API_KEY_ID", "")
         c.kalshi.private_key_str = os.getenv("KALSHI_PRIVATE_KEY", "")
         c.kalshi.private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "kalshi_private_key.pem")
-        c.kalshi.use_demo        = os.getenv("KALSHI_USE_DEMO", "false").lower() == "true"
+        c.kalshi.use_demo = os.getenv("KALSHI_USE_DEMO", "false").lower() == "true"
         c.trading.starting_balance = float(os.getenv("STARTING_BALANCE", "30"))
         c.dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
         return c
 
 # Kalshi temperature series -> NWS station + exact coordinates
-# Settlement: NWS Daily Climatological Report released the following morning
 KALSHI_WEATHER_SERIES = {
     "KXHIGHNY":   {"city": "New York City",  "station": "KNYC", "lat": 40.7789,  "lon": -73.9692},
     "KXHIGHCHI":  {"city": "Chicago",        "station": "KMDW", "lat": 41.7868,  "lon": -87.7522},
