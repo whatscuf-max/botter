@@ -10,17 +10,14 @@ from market_data import Market
 
 logger = logging.getLogger("kalshi_bot.strategies")
 
-
 class SignalType(Enum):
     ARBITRAGE = "arbitrage"
     MOMENTUM  = "momentum"
     WEATHER   = "weather"
 
-
 class Side(Enum):
     BUY  = "buy"
     SELL = "sell"
-
 
 @dataclass
 class TradeSignal:
@@ -42,12 +39,10 @@ class TradeSignal:
     def price(self) -> float:
         return self.yes_price_cents / 100.0
 
-
 def is_weather_market(market: Market) -> bool:
     if market.series_ticker and market.series_ticker in KALSHI_WEATHER_SERIES:
         return True
     return market.slug.upper().startswith("KXHIGH")
-
 
 def calc_rsi(prices: List[float], period: int = 14) -> Optional[float]:
     if len(prices) < period + 1:
@@ -63,12 +58,10 @@ def calc_rsi(prices: List[float], period: int = 14) -> Optional[float]:
         return 100.0
     return 100 - (100 / (1 + avg_gain / avg_loss))
 
-
 def calc_sma(prices: List[float], period: int) -> Optional[float]:
     if len(prices) < period:
         return None
     return sum(prices[-period:]) / period
-
 
 def calc_ema(prices: List[float], period: int) -> Optional[float]:
     if len(prices) < period:
@@ -79,12 +72,10 @@ def calc_ema(prices: List[float], period: int) -> Optional[float]:
         ema = p * k + ema * (1 - k)
     return ema
 
-
 def calc_momentum(prices: List[float], lookback: int = 3) -> Optional[float]:
     if len(prices) < lookback + 1:
         return None
     return prices[-1] - prices[-(lookback + 1)]
-
 
 def calc_volatility(prices: List[float], period: int = 10) -> Optional[float]:
     if len(prices) < period:
@@ -93,7 +84,6 @@ def calc_volatility(prices: List[float], period: int = 10) -> Optional[float]:
     mean = sum(window) / len(window)
     variance = sum((p - mean) ** 2 for p in window) / len(window)
     return variance ** 0.5
-
 
 class ArbitrageStrategy:
     def __init__(self, min_spread: float = 0.015, fee_rate: float = 0.02, min_liquidity: float = 10.0):
@@ -121,7 +111,6 @@ class ArbitrageStrategy:
             edge=edge,
             reason=f"Arb spread={net_spread:.3f} combined={market.combined_price:.3f}",
         )
-
 
 class InternalWeatherStrategy:
     """Directional weather signal using a pre-populated forecast cache."""
@@ -177,7 +166,6 @@ class InternalWeatherStrategy:
                 reason=f"Forecast {forecast_high:.1f}F < strike {market.strike:.1f}F (diff={diff:+.1f})",
             )
 
-
 class MomentumStrategy:
     def __init__(self, threshold: float = 0.55):
         self.threshold = threshold
@@ -216,7 +204,6 @@ class MomentumStrategy:
             )
         return None
 
-
 class StrategyEngine:
     def __init__(self, config, forecast_cache: dict = None):
         self.arb      = ArbitrageStrategy(
@@ -226,7 +213,7 @@ class StrategyEngine:
         )
         self.weather  = InternalWeatherStrategy(
             forecast_cache or {},
-            min_confidence=config.trading.min_confidence,
+            min_confidence=config.trading.momentum_threshold,
         )
         self.momentum = MomentumStrategy(threshold=config.trading.momentum_threshold)
 
