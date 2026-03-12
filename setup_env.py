@@ -4,44 +4,41 @@ Just paste each key when prompted, press Enter.
 """
 
 import textwrap
+import re
 
 print("\n=== Kalshi Weather Bot - First Time Setup ===\n")
 print("Paste each key and press Enter. Leave blank to skip.\n")
 
 kalshi_key_id = input("Kalshi API Key ID: ").strip()
-
-print("\nKalshi Private Key:")
-print("(Paste just the raw key string - no headers needed, we add them automatically)")
-raw_key = input("> ").strip()
-
-# Strip any existing headers/whitespace just in case
-raw_key = raw_key.replace("-----BEGIN RSA PRIVATE KEY-----", "")
-raw_key = raw_key.replace("-----END RSA PRIVATE KEY-----", "")
-raw_key = raw_key.replace("-----BEGIN PRIVATE KEY-----", "")
-raw_key = raw_key.replace("-----END PRIVATE KEY-----", "")
-raw_key = raw_key.replace(" ", "").replace("\n", "").replace("\r", "").strip()
-
-# Wrap to 64-char lines (standard PEM format)
-wrapped = "\n".join(textwrap.wrap(raw_key, 64))
-kalshi_private_key = f"-----BEGIN RSA PRIVATE KEY-----\n{wrapped}\n-----END RSA PRIVATE KEY-----"
-
-weatherapi_key = input("\nWeatherAPI Key (from weatherapi.com): ").strip()
+kalshi_private_key = input("Kalshi Private Key (paste the raw string, no headers needed): ").strip()
+weatherapi_key = input("WeatherAPI Key (from weatherapi.com): ").strip()
 noaa_token = input("NOAA Token (from ncdc.noaa.gov/cdo-web/token): ").strip()
+dry_run = input("Enable DRY RUN mode? (yes/no, default yes): ").strip().lower()
+dry_run = "false" if dry_run == "no" else "true"
 
-dry = input("\nEnable DRY RUN mode? (yes/no, default yes): ").strip().lower()
-dry_run = "false" if dry == "no" else "true"
+# Strip any existing PEM headers/footers and whitespace from the raw key
+raw = kalshi_private_key
+raw = re.sub(r'-+BEGIN[^-]+-+', '', raw)
+raw = re.sub(r'-+END[^-]+-+', '', raw)
+raw = re.sub(r'\s+', '', raw)
 
-# Write .env - private key stored as single line with \n escapes
-key_oneline = kalshi_private_key.replace("\n", "\\n")
+# Re-wrap into proper 64-char lines
+wrapped = '\n'.join(textwrap.wrap(raw, 64))
+
+# Build clean PEM with exactly 5 dashes
+pem = f"-----BEGIN RSA PRIVATE KEY-----\n{wrapped}\n-----END RSA PRIVATE KEY-----"
+
+# Collapse to single line with literal \n for .env storage
+pem_oneline = pem.replace('\n', '\\n')
 
 env_content = f"""KALSHI_API_KEY_ID={kalshi_key_id}
-KALSHI_PRIVATE_KEY={key_oneline}
+KALSHI_PRIVATE_KEY={pem_oneline}
 WEATHERAPI_KEY={weatherapi_key}
 NOAA_TOKEN={noaa_token}
 DRY_RUN={dry_run}
 """
 
-with open(".env", "w") as f:
+with open('.env', 'w') as f:
     f.write(env_content)
 
 print("\n.env file created successfully!")
