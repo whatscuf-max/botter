@@ -208,7 +208,7 @@ class MarketDataFetcher:
                 question=title,
                 slug=ticker,
                 outcomes=outcomes,
-                volume_24h=float(raw.get("volume_24h", 0) or 0),
+                volume_24h=float(raw.get("volume", 0) or raw.get("volume_24h", 0) or 0),
                 liquidity=float(raw.get("liquidity", 0) or 0),
                 end_date=raw.get("close_time", ""),
                 active=raw.get("status", "") == "open",
