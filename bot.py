@@ -80,7 +80,6 @@ class KalshiBot:
         self._cycle_count = 0
         self._start_time = time.time()
         self._last_report = 0
-        self._pnl_history = []
         self._wx_markets_cache = []
 
     async def start(self):
@@ -118,7 +117,7 @@ class KalshiBot:
 
             logger.info(
                 f"Scanned {len(all_m)} markets | {len(wx_m)} weather | "
-                f"Open positions: {len(self.executor.positions)}"
+                f"Open positions: {len(self.executor.open_positions)}"
             )
 
             if self._cycle_count < 3:
@@ -149,7 +148,7 @@ class KalshiBot:
             # Execute signals
             for s in sigs:
                 # Position limit check
-                if len(self.executor.positions) >= tc.max_concurrent_positions:
+                if len(self.executor.open_positions) >= tc.max_concurrent_positions:
                     break
 
                 # Confidence check
@@ -157,7 +156,7 @@ class KalshiBot:
                 if s.confidence < min_conf:
                     continue
 
-                # Size the trade: use max_position_pct of balance, minimum 1 contract
+                # Size the trade
                 trade_value = self.executor.balance * tc.max_position_pct
                 contracts = max(1, int(trade_value / (s.yes_price_cents / 100.0)))
 
@@ -168,7 +167,7 @@ class KalshiBot:
                     continue
 
                 exec_side = ExecSide.YES if s.side == StrategySide.BUY else ExecSide.NO
-                order = await self.executor.place_order(
+                order = await self.executor._place_order(
                     market=s.market,
                     side=exec_side,
                     contracts=contracts,
@@ -182,26 +181,14 @@ class KalshiBot:
                     )
                 await asyncio.sleep(0.5)
 
-            # Update open position prices and check exits
-            for slug, pos in list(self.executor.positions.items()):
-                # Find current market price
-                market = next((m for m in all_m if m.slug == slug), None)
-                if not market:
-                    continue
-                cur_price = market.yes_price or pos.entry_price
-                self.executor.update_position_prices(slug, cur_price)
-
-                # Exit if price moved significantly in our favor (take profit at 80c+)
-                # or stop loss at 20c
-                if pos.side == ExecSide.YES:
-                    if cur_price >= 0.80:
-                        pnl = await self.executor.sell_position(slug, cur_price)
-                        logger.info(f"TAKE PROFIT: {slug} @ {cur_price:.2f} PnL=${pnl:+.2f}")
-                        self.risk.record_trade_result(pnl)
-                    elif cur_price <= 0.20:
-                        pnl = await self.executor.sell_position(slug, cur_price)
-                        logger.info(f"STOP LOSS: {slug} @ {cur_price:.2f} PnL=${pnl:+.2f}")
-                        self.risk.record_trade_result(pnl)
+            # Check exits via evaluate_positions_with_data
+            prices = {tok: hist[-1] for tok, hist in ph.items() if hist}
+            closed = await self.executor.evaluate_positions_with_data(
+                prices, "", 0.0, self._forecasts
+            )
+            for pos in closed:
+                self.risk.record_trade_result(pos.pnl)
+                logger.info(f"CLOSED: {pos.market_slug} reason={pos.exit_reason} pnl=${pos.pnl:+.2f}")
 
         except Exception as e:
             logger.error(f"Cycle error: {e}", exc_info=True)
@@ -228,10 +215,10 @@ class KalshiBot:
             f"=== REPORT | Up={h}h{m}m | "
             f"Cycles={self._cycle_count} | "
             f"Bal=${self.executor.balance:.2f} | "
-            f"Positions={len(self.executor.positions)} ==="
+            f"Positions={len(self.executor.open_positions)} ==="
         )
-        for slug, p in list(self.executor.positions.items())[:5]:
-            unreal = (p.current_price - p.entry_price) * p.contracts
+        for slug, p in list(self.executor.open_positions.items())[:5]:
+            unreal = (p.current_price - p.entry_price) * p.size
             logger.info(
                 f"  POS: {p.question[:40]} | "
                 f"Entry={p.entry_price:.3f} Cur={p.current_price:.3f} | "
@@ -243,7 +230,7 @@ class KalshiBot:
             state = {
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "balance": self.executor.balance,
-                "open_positions": len(self.executor.positions),
+                "open_positions": len(self.executor.open_positions),
                 "cycles": self._cycle_count,
             }
             with open("state.json", "w") as f:
