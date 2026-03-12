@@ -7,7 +7,7 @@ Core rule: Only buy when forecast DISAGREES with market price.
 - If forecast says NO and market prices NO at 20% -> BUY NO (value!)
 - If forecast says NO and market prices NO at 85% -> SKIP (no value)
 
-Never buy YES above 0.75 or NO above 0.75.
+Never buy YES above 0.85 or NO above 0.85 (priced in = no edge).
 
 Data sources:
   US cities:      NOAA gridpoint + Open-Meteo (averaged, confidence boosted)
@@ -37,19 +37,36 @@ import httpx
 logger = logging.getLogger("polymarket_bot.weather")
 
 AIRPORTS = {
-    "new york":      {"lat": 40.7772,  "lon": -73.8726,  "noaa": True,  "station": "LaGuardia Airport (KLGA)"},
-    "new york city": {"lat": 40.7772,  "lon": -73.8726,  "noaa": True,  "station": "LaGuardia Airport (KLGA)"},
-    "nyc":           {"lat": 40.7772,  "lon": -73.8726,  "noaa": True,  "station": "LaGuardia Airport (KLGA)"},
-    "seattle":       {"lat": 47.4489,  "lon": -122.3094, "noaa": True,  "station": "Seattle-Tacoma Intl (KSEA)"},
-    "miami":         {"lat": 25.7932,  "lon": -80.2906,  "noaa": True,  "station": "Miami Intl Airport (KMIA)"},
-    "atlanta":       {"lat": 33.6367,  "lon": -84.4281,  "noaa": True,  "station": "Hartsfield-Jackson (KATL)"},
-    "chicago":       {"lat": 41.9742,  "lon": -87.9073,  "noaa": True,  "station": "O'Hare Intl Airport (KORD)"},
-    "dallas":        {"lat": 32.8481,  "lon": -96.8512,  "noaa": True,  "station": "Dallas Love Field (KDAL)"},
-    "houston":       {"lat": 29.9902,  "lon": -95.3368,  "noaa": True,  "station": "George Bush Intercontinental (KIAH)"},
+    # --- Kalshi US cities: NWS Climatological Report exact stations ---
+    "new york":      {"lat": 40.7789,  "lon": -73.9692,  "noaa": True,  "station": "Central Park (KNYC)"},
+    "new york city": {"lat": 40.7789,  "lon": -73.9692,  "noaa": True,  "station": "Central Park (KNYC)"},
+    "nyc":           {"lat": 40.7789,  "lon": -73.9692,  "noaa": True,  "station": "Central Park (KNYC)"},
+    "chicago":       {"lat": 41.7868,  "lon": -87.7522,  "noaa": True,  "station": "Chicago Midway (KMDW)"},
+    "miami":         {"lat": 25.7959,  "lon": -80.2870,  "noaa": True,  "station": "Miami Intl (KMIA)"},
+    "austin":        {"lat": 30.1975,  "lon": -97.6664,  "noaa": True,  "station": "Austin Bergstrom (KAUS)"},
+    "philadelphia":  {"lat": 39.8719,  "lon": -75.2411,  "noaa": True,  "station": "Philadelphia Intl (KPHL)"},
+    "washington dc": {"lat": 38.8521,  "lon": -77.0377,  "noaa": True,  "station": "Reagan National (KDCA)"},
+    "washington":    {"lat": 38.8521,  "lon": -77.0377,  "noaa": True,  "station": "Reagan National (KDCA)"},
+    "dc":            {"lat": 38.8521,  "lon": -77.0377,  "noaa": True,  "station": "Reagan National (KDCA)"},
+    "denver":        {"lat": 39.8561,  "lon": -104.6737, "noaa": True,  "station": "Denver Intl (KDEN)"},
+    "dallas":        {"lat": 32.8998,  "lon": -97.0403,  "noaa": True,  "station": "Dallas/Fort Worth (KDFW)"},
+    "boston":        {"lat": 42.3656,  "lon": -71.0096,  "noaa": True,  "station": "Logan Intl (KBOS)"},
+    "seattle":       {"lat": 47.4502,  "lon": -122.3088, "noaa": True,  "station": "Seattle-Tacoma (KSEA)"},
+    "atlanta":       {"lat": 33.6407,  "lon": -84.4277,  "noaa": True,  "station": "Hartsfield-Jackson (KATL)"},
+    "phoenix":       {"lat": 33.4373,  "lon": -112.0078, "noaa": True,  "station": "Phoenix Sky Harbor (KPHX)"},
+    "san francisco": {"lat": 37.6213,  "lon": -122.3790, "noaa": True,  "station": "San Francisco Intl (KSFO)"},
+    "sf":            {"lat": 37.6213,  "lon": -122.3790, "noaa": True,  "station": "San Francisco Intl (KSFO)"},
+    "houston":       {"lat": 29.6454,  "lon": -95.2789,  "noaa": True,  "station": "Houston Hobby (KHOU)"},
     "los angeles":   {"lat": 33.9425,  "lon": -118.4081, "noaa": True,  "station": "Los Angeles Intl (KLAX)"},
     "la":            {"lat": 33.9425,  "lon": -118.4081, "noaa": True,  "station": "Los Angeles Intl (KLAX)"},
-    "phoenix":       {"lat": 33.4373,  "lon": -112.0078, "noaa": True,  "station": "Phoenix Sky Harbor (KPHX)"},
-    "denver":        {"lat": 39.8561,  "lon": -104.6737, "noaa": True,  "station": "Denver Intl (KDEN)"},
+    "las vegas":     {"lat": 36.0840,  "lon": -115.1537, "noaa": True,  "station": "Harry Reid Intl (KLAS)"},
+    "oklahoma city": {"lat": 35.3931,  "lon": -97.6008,  "noaa": True,  "station": "Will Rogers (KOKC)"},
+    "okc":           {"lat": 35.3931,  "lon": -97.6008,  "noaa": True,  "station": "Will Rogers (KOKC)"},
+    "minneapolis":   {"lat": 44.8848,  "lon": -93.2223,  "noaa": True,  "station": "Minneapolis-St. Paul (KMSP)"},
+    "san antonio":   {"lat": 29.5337,  "lon": -98.4698,  "noaa": True,  "station": "San Antonio Intl (KSAT)"},
+    "new orleans":   {"lat": 29.9931,  "lon": -90.2580,  "noaa": True,  "station": "Louis Armstrong (KMSY)"},
+    "nola":          {"lat": 29.9931,  "lon": -90.2580,  "noaa": True,  "station": "Louis Armstrong (KMSY)"},
+    # --- International cities ---
     "london":        {"lat": 51.4706,  "lon": -0.4619,   "noaa": False, "station": "Heathrow Airport (EGLL)",      "met_office": True},
     "paris":         {"lat": 49.0128,  "lon":  2.5500,   "noaa": False, "station": "Charles de Gaulle (LFPG)",     "met_office": True},
     "munich":        {"lat": 48.3538,  "lon": 11.7861,   "noaa": False, "station": "Munich Airport (EDDM)",        "met_office": True},
@@ -67,7 +84,6 @@ AIRPORTS = {
     "singapore":     {"lat": 1.3644,   "lon": 103.9915,  "noaa": False, "station": "Changi Airport (WSSS)"},
     "mumbai":        {"lat": 19.0896,  "lon": 72.8656,   "noaa": False, "station": "Chhatrapati Shivaji (VABB)"},
     "delhi":         {"lat": 28.5562,  "lon": 77.1000,   "noaa": False, "station": "Indira Gandhi Intl (VIDP)"},
-    "lucknow":       {"lat": 26.7606,  "lon":  80.8893,  "noaa": False, "station": "Chaudhary Charan Singh (VILK)"},
     "wellington":    {"lat": -41.3272, "lon": 174.8053,  "noaa": False, "station": "Wellington Airport (NZWN)"},
     "sydney":        {"lat": -33.9461, "lon": 151.1772,  "noaa": False, "station": "Sydney Kingsford Smith (YSSY)"},
     "sao paulo":     {"lat": -23.4356, "lon": -46.4731,  "noaa": False, "station": "Guarulhos Intl (SBGR)"},
@@ -330,9 +346,9 @@ class ForecastFetcher:
                 return None
 
             if hourly_temps and hourly_times:
-                day_temps = [
-                    t for ts, t in zip(hourly_times, hourly_temps)
-                    if ts.startswith(date_str) and t is not None
+                day_temps = [\
+                    t for ts, t in zip(hourly_times, hourly_temps)\
+                    if ts.startswith(date_str) and t is not None\
                 ]
                 if day_temps:
                     return float(max(day_temps))
@@ -592,11 +608,11 @@ class WeatherStrategy:
 
             if forecast_says_yes:
                 outcome, price, token_id = "Yes", yes_price, mkt.yes_token_id or ""
-                if price > 0.75 or price < 0.03:
+                if price > 0.85 or price < 0.03:
                     continue
             else:
                 outcome, price, token_id = "No", no_price, mkt.no_token_id or ""
-                if price > 0.75 or price < 0.03:
+                if price > 0.85 or price < 0.03:
                     continue
 
             # FIX 4: Strict edge + EV filters
@@ -653,32 +669,3 @@ class WeatherStrategy:
             )
 
         return signals
-
-
-async def fetch_forecasts_for_kalshi() -> dict:
-    """
-    Fetch today's high-temp forecast for every Kalshi weather series.
-    Returns dict keyed by series ticker, e.g.:
-      {"KXHIGHNY": {"forecast_high": 71.2}, "KXHIGHCHI": {"forecast_high": 58.4}, ...}
-    """
-    from datetime import date
-    from config import KALSHI_WEATHER_SERIES
-
-    fetcher = ForecastFetcher()
-    results = {}
-    target = date.today().isoformat()
-    try:
-        for series_ticker, info in KALSHI_WEATHER_SERIES.items():
-            city = info["city"].lower()
-            try:
-                fc = await fetcher.get_forecast(city, target_date=target)
-                if fc and fc.get("temp_f") is not None:
-                    results[series_ticker] = {"forecast_high": fc["temp_f"]}
-            except Exception as e:
-                import logging
-                logging.getLogger("kalshi_bot.weather").warning(
-                    f"Forecast fetch failed for {series_ticker} ({city}): {e}"
-                )
-    finally:
-        await fetcher.close()
-    return results
