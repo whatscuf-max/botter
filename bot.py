@@ -5,21 +5,22 @@ bot.py  -  Kalshi Weather Trading Bot
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import signal
 import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import BotConfig, KALSHI_WEATHER_SERIES
+from config import BotConfig
 from market_data import MarketDataFetcher
 from strategies import StrategyEngine, is_weather_market
 from executor import TradeExecutor
 from risk_manager import RiskManager
-from weather_strategy import WeatherStrategy
-
+from weather_strategy import WeatherStrategy, KALSHI_WEATHER_SERIES
 
 class RingBufferHandler(logging.Handler):
     def __init__(self, capacity=200):
@@ -36,13 +37,11 @@ class RingBufferHandler(logging.Handler):
     def lines(self):
         return list(self._buf)
 
-
 _ring = RingBufferHandler(200)
 _ring.setFormatter(logging.Formatter(
     "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
     datefmt="%H:%M:%S"
 ))
-
 
 def setup_logging(config):
     log_dir = Path("logs")
@@ -68,22 +67,17 @@ def setup_logging(config):
     root.addHandler(ch)
     root.addHandler(_ring)
 
-
 logger = logging.getLogger("kalshi_bot.main")
-
 
 class KalshiBot:
     def __init__(self, config):
         self.config = config
         self.running = False
         self.data = MarketDataFetcher(config)
-        # StrategyEngine needs forecast_cache; start with empty dict, update each cycle
         self._forecasts: dict = {}
         self.strategy = StrategyEngine(config, self._forecasts)
         self.weather = WeatherStrategy(
-            min_confidence=0.55,
-            max_position_pct=config.trading.max_position_pct,
-        )
+            min_confidence=0.55, max_position_pct=config.trading.max_position_pct)
         self.risk = RiskManager(config)
         self.executor = TradeExecutor(config)
         self._cycle_count = 0
@@ -134,7 +128,7 @@ class KalshiBot:
             await asyncio.sleep(300)
             return
         try:
-            # Fetch all active markets from Kalshi
+            # Fetch weather markets from Kalshi
             all_m = await self.data.fetch_active_markets(limit=200)
             wx_m = [m for m in all_m if is_weather_market(m)]
             self._wx_markets_cache = wx_m
@@ -148,7 +142,7 @@ class KalshiBot:
                 for m in wx_m[:10]:
                     logger.info(f"  WX: {m.question} | Vol=${m.volume_24h:,.0f}")
 
-            # Fetch orderbooks for top weather markets
+            # Fetch orderbooks for top markets
             for m in wx_m[:20]:
                 try:
                     await self.data.fetch_market_with_books(m)
@@ -156,27 +150,27 @@ class KalshiBot:
                     pass
                 await asyncio.sleep(0.1)
 
-            # Build price history per token
-            ph: dict = {}
+            # Build price map
+            prices = {}
+            for m in all_m:
+                for o in m.outcomes:
+                    if o.token_id:
+                        prices[o.token_id] = o.price
+            self.executor.update_prices(prices)
+
+            # Build price history
+            ph = {}
             for m in all_m:
                 for o in m.outcomes:
                     if o.token_id:
                         self.data.record_price(o.token_id, o.price)
                         ph[o.token_id] = self.data.get_price_history(o.token_id)
 
-            # Update executor prices
-            prices = {tid: hist[-1] for tid, hist in ph.items() if hist}
-            self.executor.update_prices(prices)
-
-            # Run arb + momentum strategies across all markets
             sigs = []
             for m in all_m:
-                token_id = m.outcomes[0].token_id if m.outcomes else None
-                history = ph.get(token_id, []) if token_id else []
-                market_sigs = self.strategy.analyze(m, price_history=history if len(history) >= 22 else None)
-                sigs.extend(market_sigs)
+                ph_m = ph.get(m.outcomes[0].token_id, []) if m.outcomes else []
+                sigs.extend(self.strategy.analyze(m, ph_m))
 
-            # Run weather strategy separately (async, multi-source forecasts)
             if wx_m:
                 try:
                     wx = await self.weather.analyze(wx_m, self.executor.balance)
@@ -185,12 +179,11 @@ class KalshiBot:
                         sigs.extend(wx)
                     elif self._cycle_count % 6 == 0:
                         logger.info(f"WEATHER: {len(wx_m)} markets, no value trades")
-                    # Cache forecasts so StrategyEngine.WeatherStrategy can use them too
                     if hasattr(self.weather, "fetcher"):
-                        self._forecasts.update({
+                        self._forecasts = {
                             c: d for c, (_, d) in
                             self.weather.fetcher._forecast_cache.items()
-                        })
+                        }
                 except Exception as e:
                     logger.error(f"Weather err: {e}", exc_info=True)
 
@@ -207,49 +200,68 @@ class KalshiBot:
                     s.size = self.risk.calculate_compound_size(
                         s.size, self.executor.balance, tc.starting_balance)
                     o = await self.executor.execute_signal(s)
-                    if o and hasattr(o, "status") and str(o.status) == "filled":
+                    if o and o.status.value == "filled":
                         logger.info(
                             f"TRADE: {s.outcome} | {s.market.question} | "
                             f"${s.size:.2f}@{s.price:.3f}"
                         )
+                    await asyncio.sleep(1)
+            elif self._cycle_count % 18 == 0:
+                logger.info(
+                    f"Scanning | Bal=${self.executor.balance:.2f} | Wx={len(wx_m)}")
+
+            closed = await self.executor.evaluate_positions_with_data(
+                prices, "", 0, self._forecasts)
+            for p in closed:
+                ps = f"+${p.pnl:.2f}" if p.pnl >= 0 else f"-${abs(p.pnl):.2f}"
+                logger.info(f"DATA EXIT: {p.question} | {ps} | {p.exit_reason}")
 
         except Exception as e:
-            logger.error(f"Cycle error: {e}", exc_info=True)
+            logger.error(f"Cycle err: {e}", exc_info=True)
+            await asyncio.sleep(5)
 
     def _print_banner(self):
-        mode = "DEMO" if self.config.kalshi.use_demo else "LIVE"
-        dry = " [DRY RUN]" if self.config.trading.dry_run else ""
-        city_count = len(KALSHI_WEATHER_SERIES)
+        mode = "DRY RUN" if self.config.dry_run else "LIVE"
+        demo = " [DEMO]" if self.config.kalshi.use_demo else ""
         print(f"""
-╔══════════════════════════════════════════════╗
-║      Kalshi Weather Trading Bot              ║
-║  Mode: {mode:<6}{dry:<12}                  ║
-║  Cities: {city_count:<3} weather series tracked       ║
-╔══════════════════════════════════════════════╝""")
+================================================================
+        KALSHI WEATHER TRADING BOT{demo}
+================================================================
+  Mode:     {mode} | Balance: ${self.config.trading.starting_balance:.2f}
+  Scan:     Every {self.config.trading.scan_interval}s
+  Report:   Every 5 min | Max positions: {self.config.trading.max_concurrent_positions}
+  Sources:  NOAA (US NWS stations) + Kalshi REST API v2
+  Cities:   {len(KALSHI_WEATHER_SERIES)} markets tracked
+================================================================
+""")
 
     def _report(self):
-        uptime = (time.time() - self._start_time) / 3600
-        bal = self.executor.balance
-        invested = self.executor.total_invested
-        open_pos = len(self.executor.open_positions)
+        up = time.time() - self._start_time
+        h, m = divmod(int(up) // 60, 60)
         logger.info(
-            f"REPORT | Uptime={uptime:.1f}h | Balance=${bal:,.2f} | "
-            f"Invested=${invested:,.2f} | OpenPos={open_pos} | Cycle={self._cycle_count}"
+            f"=== REPORT | Up={h}h{m}m | "
+            f"Cycles={self._cycle_count} | "
+            f"Bal=${self.executor.balance:.2f} | "
+            f"Positions={len(self.executor.open_positions)} ==="
         )
+        for p in list(self.executor.open_positions.values())[:5]:
+            cur = self.executor._prices.get(p.token_id, p.entry_price)
+            unreal = (cur - p.entry_price) * p.size
+            logger.info(
+                f"  POS: {p.question[:40]} | "
+                f"Entry={p.entry_price:.3f} Cur={cur:.3f} | "
+                f"P&L={unreal:+.2f}"
+            )
 
     def _save(self):
         try:
             state = {
-                "cycle": self._cycle_count,
+                "ts": datetime.now(timezone.utc).isoformat(),
                 "balance": self.executor.balance,
                 "open_positions": len(self.executor.open_positions),
-                "total_invested": self.executor.total_invested,
-                "trade_count": len(self.executor.trade_history),
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "cycles": self._cycle_count,
             }
-            Path("logs").mkdir(exist_ok=True)
-            with open("logs/state.json", "w") as f:
-                import json
+            with open("state.json", "w") as f:
                 json.dump(state, f, indent=2)
         except Exception:
             pass
@@ -257,47 +269,27 @@ class KalshiBot:
     async def _shutdown(self):
         self.running = False
         logger.info("Shutting down...")
-        if hasattr(self.weather, "close"):
-            await self.weather.close()
-        if hasattr(self.data, "close"):
-            await self.data.close()
+        await self.data.close()
         logger.info("Shutdown complete.")
 
+def handle_signal(bot, loop):
+    bot.running = False
+    loop.stop()
 
 async def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="Kalshi Weather Trading Bot")
-    parser.add_argument("--balance", type=float, default=None,
-                        help="Override starting balance for dry run")
-    args = parser.parse_args()
+    from dotenv import load_dotenv
+    load_dotenv()
 
     config = BotConfig.from_env()
+    setup_logging(config)
     logger.info("Config loaded")
 
-    if args.balance and config.trading.dry_run:
-        config.trading.starting_balance = args.balance
-        config.trading.max_position_size = args.balance * 0.10
-
-    setup_logging(config)
-    logger.info(
-        f"Starting | dry_run={config.trading.dry_run} | "
-        f"demo={config.kalshi.use_demo} | "
-        f"balance=${config.trading.starting_balance:,.0f}"
-    )
-
     bot = KalshiBot(config)
-
-    import signal as _signal
     loop = asyncio.get_event_loop()
-    for sig in (getattr(_signal, "SIGINT", None), getattr(_signal, "SIGTERM", None)):
-        if sig:
-            try:
-                loop.add_signal_handler(sig, lambda: asyncio.create_task(bot._shutdown()))
-            except (NotImplementedError, RuntimeError):
-                pass
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, handle_signal, bot, loop)
 
     await bot.start()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
