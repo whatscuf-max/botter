@@ -16,7 +16,6 @@ from config import BotConfig, KALSHI_WEATHER_SERIES
 
 logger = logging.getLogger("kalshi_bot.markets")
 
-
 def _sign_request(private_key, method: str, path: str) -> dict:
     ts = str(int(datetime.datetime.now().timestamp() * 1000))
     clean_path = path.split("?")[0]
@@ -33,12 +32,10 @@ def _sign_request(private_key, method: str, path: str) -> dict:
         "Content-Type": "application/json",
     }
 
-
 @dataclass
 class OrderBookLevel:
     price: float
     size: int
-
 
 @dataclass
 class OrderBook:
@@ -53,14 +50,12 @@ class OrderBook:
     def best_ask(self) -> Optional[float]:
         return self.asks[0].price if self.asks else None
 
-
 @dataclass
 class MarketOutcome:
     token_id: str
     outcome: str
     price: float
     order_book: Optional[OrderBook] = None
-
 
 @dataclass
 class Market:
@@ -109,22 +104,34 @@ class Market:
         cp = self.combined_price
         return (1.0 - cp) if cp is not None else None
 
-
 class KalshiClient:
     def __init__(self, config: BotConfig):
         self.config = config
         self.base_url = config.kalshi.active_url
         self.api_key_id = config.kalshi.api_key_id
         self._private_key = None
-        # Only load key if we have a real key ID (not dry run placeholder)
-        if config.kalshi.api_key_id:
+        if not config.kalshi.api_key_id:
+            return
+        # Try raw string key first (KALSHI_PRIVATE_KEY env var)
+        raw_str = getattr(config.kalshi, "private_key_str", "")
+        if raw_str and raw_str.strip():
             try:
-                with open(config.kalshi.private_key_path, "rb") as f:
-                    data = f.read()
-                if data.strip():
-                    self._private_key = serialization.load_pem_private_key(data, password=None)
+                # Normalize: env vars may have literal \n instead of real newlines
+                pem = raw_str.replace("\\n", "\n").encode()
+                self._private_key = serialization.load_pem_private_key(pem, password=None)
+                logger.info("Loaded Kalshi private key from environment string")
+                return
             except Exception as e:
-                logger.warning(f"Could not load private key: {e}  (dry run will still work)")
+                logger.warning(f"Could not parse KALSHI_PRIVATE_KEY string: {e}")
+        # Fall back to .pem file
+        try:
+            with open(config.kalshi.private_key_path, "rb") as f:
+                data = f.read()
+            if data.strip():
+                self._private_key = serialization.load_pem_private_key(data, password=None)
+                logger.info("Loaded Kalshi private key from .pem file")
+        except Exception as e:
+            logger.warning(f"Could not load private key: {e}  (dry run will still work)")
 
     def _headers(self, method: str, path: str) -> dict:
         if self._private_key is None:
@@ -146,7 +153,6 @@ class KalshiClient:
         r = await client.post(url, headers=headers, json=body or {})
         r.raise_for_status()
         return r.json()
-
 
 class MarketDataFetcher:
     def __init__(self, config: BotConfig):
@@ -194,9 +200,9 @@ class MarketDataFetcher:
             no_cents = 100 - yes_cents
             yes_price = yes_cents / 100.0
             no_price = no_cents / 100.0
-            outcomes = [
-                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),
-                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),
+            outcomes = [\
+                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),\
+                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),\
             ]
             strike = 0.0
             title = raw.get("title", "") or raw.get("subtitle", "")
