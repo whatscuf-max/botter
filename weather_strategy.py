@@ -83,7 +83,6 @@ AIRPORTS = {
 MET_OFFICE_API_KEY = "eyJ4NXQjUzI1NiI6Ik5XVTVZakUxTkRjeVl6a3hZbUl4TkdSaFpqSmpOV1l6T1dGaE9XWXpNMk0yTWpRek5USm1OVEE0TXpOaU9EaG1NVFJqWVdNellXUm1ZalUyTTJJeVpBPT0iLCJraWQiOiJnYXRld2F5X2NlcnRpZmljYXRlX2FsaWFzIiwidHlwIjoiSldUIiwiYWxnIjoiUlMyNTYifQ==.eyJzdWIiOiJ3aGF0LnNjdWZAZ21haWwuY29tQGNhcmJvbi5zdXBlciIsImFwcGxpY2F0aW9uIjp7Im93bmVyIjoid2hhdC5zY3VmQGdtYWlsLmNvbSIsInRpZXJRdW90YVR5cGUiOm51bGwsInRpZXIiOiJVbmxpbWl0ZWQiLCJuYW1lIjoic2l0ZV9zcGVjaWZpYy05MDY3YzMwYy1kMTljLTQ4NzYtODc0OC01MTEyNTU4NThiZGYiLCJpZCI6NDE2NjUsInV1aWQiOiI1Zjg5MjI4Yy0xM2U3LTRkMzAtYTAyOC04NTYzYWM4OGU5ZGUifSwiaXNzIjoiaHR0cHM6XC9cL2FwaS1tYW5hZ2VyLmFwaS1tYW5hZ2VtZW50Lm1ldG9mZmljZS5jbG91ZDo0NDNcL29hdXRoMlwvdG9rZW4iLCJ0aWVySW5mbyI6eyJ3ZGhfc2l0ZV9zcGVjaWZpY19mcmVlIjp7InRpZXJRdW90YVR5cGUiOiJyZXF1ZXN0Q291bnQiLCJncmFwaFFMTWF4Q29tcGxleGl0eSI6MCwiZ3JhcGhRTE1heERlcHRoIjowLCJzdG9wT25RdW90YVJlYWNoIjp0cnVlLCJzcGlrZUFycmVzdExpbWl0IjowLCJzcGlrZUFycmVzdFVuaXQiOiJzZWMifX0sImtleXR5cGUiOiJQUk9EVUNUSU9OIiwic3Vic2NyaWJlZEFQSXMiOlt7InN1YnNjcmliZXJUZW5hbnREb21haW4iOiJjYXJib24uc3VwZXIiLCJuYW1lIjoiU2l0ZVNwZWNpZmljRm9yZWNhc3QiLCJjb250ZXh0IjoiXC9zaXRlc3BlY2lmaWNcL3YwIiwicHVibGlzaGVyIjoiSmFndWFyX0NJIiwidmVyc2lvbiI6InYwIiwic3Vic2NyaXB0aW9uVGllciI6IndkaF9zaXRlX3NwZWNpZmljX2ZyZWUifV0sInRva2VuX3R5cGUiOiJhcGlLZXkiLCJpYXQiOjE3NzMxNzMyNDIsImp0aSI6IjVmMjg1NWZlLTM1ZWMtNDQxZS1hMzhjLWNjZGE3MjQwYjI0ZiJ9.I3tFb4mfUVxCnPVTCAMJ_VgUx99SXIRVxY_2UbWEU9eH9IRvBXzjUOv8uC9hVVSw3LmzS4aMLnM6oiB2lJHSHxPGyFB3ybzcBYoa_wIFrt0H5UK_Br5IWGAkB1aG2xvVCburIu-QCHPT5PlpghfDb0MreUjXxB9fZT6HenvHUoHgZ3MZnuR499Y39Y1bdmvhtnf8ypS6wrf5oTuwIPW5rsQmK8QfpTscImt8eqYOjI1FqYJwuWxIdpcdKRg0tqRq0gTjQzHNCt6kGfDqtLtnblrjL0hXonG8DR5wmShr5oim7mAyGi7dENBL9vgkgS3zu4E4m1y7ZXN22QQt2hbD1A=="
 WEATHERAPI_KEY = "416de86549c44e40918200751261003"
 
-
 @dataclass
 class ParsedWeatherMarket:
     city: str
@@ -95,7 +94,6 @@ class ParsedWeatherMarket:
     raw_question: str
     target_date: Optional[str] = None
     hours_to_resolve: float = 24.0
-
 
 def parse_weather_question(question: str) -> Optional[ParsedWeatherMarket]:
     q = question.lower()
@@ -162,7 +160,6 @@ def parse_weather_question(question: str) -> Optional[ParsedWeatherMarket]:
                                    unit, is_or_below, is_or_higher, question)
 
     return None
-
 
 class ForecastFetcher:
     """
@@ -463,7 +460,6 @@ class ForecastFetcher:
             logger.debug(f"NOAA observed err ({station_id}): {e}")
         return None
 
-
 class WeatherStrategy:
     """
     VALUE-BASED trading: only buy when there is a real gap between
@@ -657,3 +653,32 @@ class WeatherStrategy:
             )
 
         return signals
+
+
+async def fetch_forecasts_for_kalshi() -> dict:
+    """
+    Fetch today's high-temp forecast for every Kalshi weather series.
+    Returns dict keyed by series ticker, e.g.:
+      {"KXHIGHNY": {"forecast_high": 71.2}, "KXHIGHCHI": {"forecast_high": 58.4}, ...}
+    """
+    from datetime import date
+    from config import KALSHI_WEATHER_SERIES
+
+    fetcher = ForecastFetcher()
+    results = {}
+    target = date.today().isoformat()
+    try:
+        for series_ticker, info in KALSHI_WEATHER_SERIES.items():
+            city = info["city"].lower()
+            try:
+                fc = await fetcher.get_forecast(city, target_date=target)
+                if fc and fc.get("temp_f") is not None:
+                    results[series_ticker] = {"forecast_high": fc["temp_f"]}
+            except Exception as e:
+                import logging
+                logging.getLogger("kalshi_bot.weather").warning(
+                    f"Forecast fetch failed for {series_ticker} ({city}): {e}"
+                )
+    finally:
+        await fetcher.close()
+    return results
