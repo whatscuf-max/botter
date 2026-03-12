@@ -5,6 +5,7 @@ import datetime
 import logging
 import os
 import re
+import textwrap
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -17,7 +18,7 @@ from config import BotConfig, KALSHI_WEATHER_SERIES
 
 logger = logging.getLogger("kalshi_bot.markets")
 
-def _sign_request(private_key, method: str, path: str) -> dict:
+def _sign_request(private_key, key_id: str, method: str, path: str) -> dict:
     ts = str(int(datetime.datetime.now().timestamp() * 1000))
     clean_path = path.split("?")[0]
     msg = f"{ts}{method}{clean_path}".encode()
@@ -27,7 +28,7 @@ def _sign_request(private_key, method: str, path: str) -> dict:
         hashes.SHA256(),
     )
     return {
-        "KALSHI-ACCESS-KEY": "",
+        "KALSHI-ACCESS-KEY": key_id,
         "KALSHI-ACCESS-SIGNATURE": base64.b64encode(sig).decode(),
         "KALSHI-ACCESS-TIMESTAMP": ts,
         "Content-Type": "application/json",
@@ -51,210 +52,173 @@ class OrderBook:
     def best_ask(self) -> Optional[float]:
         return self.asks[0].price if self.asks else None
 
+    @property
+    def mid(self) -> Optional[float]:
+        if self.best_bid and self.best_ask:
+            return (self.best_bid + self.best_ask) / 2
+        return self.best_bid or self.best_ask
+
 @dataclass
-class MarketOutcome:
-    token_id: str
-    outcome: str
-    price: float
+class KalshiMarket:
+    ticker: str
+    title: str
+    yes_bid: float
+    yes_ask: float
+    no_bid: float
+    no_ask: float
+    volume: int
+    open_interest: int
+    close_time: Optional[datetime.datetime]
+    series_ticker: str
+    status: str
     order_book: Optional[OrderBook] = None
 
-@dataclass
-class Market:
-    condition_id: str
-    question: str
-    slug: str
-    outcomes: List[MarketOutcome] = field(default_factory=list)
-    volume_24h: float = 0.0
-    liquidity: float = 0.0
-    end_date: str = ""
-    active: bool = True
-    tags: List[str] = field(default_factory=list)
-    series_ticker: str = ""
-    strike: float = 0.0
-
-    @property
-    def yes_price(self) -> Optional[float]:
-        for o in self.outcomes:
-            if o.outcome.lower() == "yes":
-                return o.price
-        return None
-
-    @property
-    def no_price(self) -> Optional[float]:
-        for o in self.outcomes:
-            if o.outcome.lower() == "no":
-                return o.price
-        return None
-
-    @property
-    def yes_token_id(self) -> Optional[str]:
-        for o in self.outcomes:
-            if o.outcome.lower() == "yes":
-                return o.token_id
-        return None
-
-    @property
-    def combined_price(self) -> Optional[float]:
-        y, n = self.yes_price, self.no_price
-        if y is not None and n is not None:
-            return y + n
-        return None
-
-    @property
-    def arb_spread(self) -> Optional[float]:
-        cp = self.combined_price
-        return (1.0 - cp) if cp is not None else None
-
 class KalshiClient:
+    BASE_URL = "https://trading-api.kalshi.com/trade-api/v2"
+
     def __init__(self, config: BotConfig):
         self.config = config
-        self.base_url = config.kalshi.active_url
-        self.api_key_id = config.kalshi.api_key_id
-        self._private_key = None
+        self.private_key = None
+        self.key_id = config.kalshi.api_key_id
 
-        if not config.kalshi.api_key_id:
-            return
-
-        # 1) Try loading from KALSHI_PRIVATE_KEY env string
-        raw_str = os.environ.get("KALSHI_PRIVATE_KEY", "").strip()
-        if raw_str:
+        key_str = os.environ.get("KALSHI_PRIVATE_KEY", "").strip()
+        if key_str:
             try:
-                # Normalise \n literals to real newlines
-                raw_str = raw_str.replace("\\n", "\n")
-                # Wrap PEM headers if missing
-                if "BEGIN" not in raw_str:
-                    wrapped = (
-                        "-----BEGIN RSA PRIVATE KEY-----\n"
-                        + "\n".join(raw_str[i:i+64] for i in range(0, len(raw_str), 64))
-                        + "\n-----END RSA PRIVATE KEY-----\n"
-                    )
+                if "BEGIN" not in key_str:
+                    # wrap raw base64 in PEM headers
+                    body = "\n".join(textwrap.wrap(key_str.replace("\\n", "").replace("\n", ""), 64))
+                    key_str = f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----"
                 else:
-                    wrapped = raw_str
-                self._private_key = serialization.load_pem_private_key(
-                    wrapped.encode(), password=None
-                )
+                    key_str = key_str.replace("\\n", "\n")
+                    key_str = re.sub(r'-----BEGIN RSA PRIVATE KEY-----\s*', '-----BEGIN RSA PRIVATE KEY-----\n', key_str)
+                    key_str = re.sub(r'\s*-----END RSA PRIVATE KEY-----', '\n-----END RSA PRIVATE KEY-----', key_str)
+                self.private_key = serialization.load_pem_private_key(key_str.encode(), password=None)
                 logger.info("Loaded Kalshi private key from environment string")
-                return
             except Exception as e:
                 logger.warning(f"Could not parse KALSHI_PRIVATE_KEY string: {e}")
 
-        # 2) Fall back to .pem file
-        pem_path = config.kalshi.private_key_path
-        if pem_path:
+        if self.private_key is None:
+            pem_path = config.kalshi.private_key_path
             try:
                 with open(pem_path, "rb") as f:
-                    data = f.read()
-                if data.strip():
-                    self._private_key = serialization.load_pem_private_key(data, password=None)
-                    logger.info(f"Loaded Kalshi private key from file: {pem_path}")
-                    return
+                    self.private_key = serialization.load_pem_private_key(f.read(), password=None)
+                logger.info(f"Loaded Kalshi private key from file: {pem_path}")
             except Exception as e:
-                logger.warning(f"Could not load private key from file: {e}")
-
-        logger.warning("No private key loaded — authenticated requests will fail")
+                logger.warning(f"Could not load private key: {e}  (dry run will still work)")
 
     def _headers(self, method: str, path: str) -> dict:
-        if self._private_key is None:
+        if self.private_key is None:
             return {"Content-Type": "application/json"}
-        h = _sign_request(self._private_key, method, path)
-        h["KALSHI-ACCESS-KEY"] = self.api_key_id
-        return h
+        return _sign_request(self.private_key, self.key_id, method, path)
 
-    async def get(self, client: httpx.AsyncClient, path: str, params: dict = None):
-        url = self.base_url + path
-        headers = self._headers("GET", path)
-        r = await client.get(url, headers=headers, params=params)
-        r.raise_for_status()
-        return r.json()
+    async def get_balance(self) -> float:
+        if self.private_key is None:
+            return 30.0
+        path = "/portfolio/balance"
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                self.BASE_URL + path,
+                headers=self._headers("GET", path),
+                timeout=10,
+            )
+            r.raise_for_status()
+            return r.json().get("balance", 0) / 100
 
-    async def post(self, client: httpx.AsyncClient, path: str, body: dict = None):
-        url = self.base_url + path
-        headers = self._headers("POST", path)
-        r = await client.post(url, headers=headers, json=body or {})
-        r.raise_for_status()
-        return r.json()
+    async def get_markets(self, series_ticker: str) -> List[KalshiMarket]:
+        path = f"/markets"
+        params = {"series_ticker": series_ticker, "status": "open", "limit": 200}
+        query = f"{path}?series_ticker={series_ticker}&status=open&limit=200"
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                self.BASE_URL + query,
+                headers=self._headers("GET", path),
+                timeout=10,
+            )
+            r.raise_for_status()
+            markets = []
+            for m in r.json().get("markets", []):
+                close_time = None
+                if m.get("close_time"):
+                    try:
+                        close_time = datetime.datetime.fromisoformat(m["close_time"].replace("Z", "+00:00"))
+                    except Exception:
+                        pass
+                markets.append(KalshiMarket(
+                    ticker=m["ticker"],
+                    title=m.get("title", ""),
+                    yes_bid=m.get("yes_bid", 0) / 100,
+                    yes_ask=m.get("yes_ask", 0) / 100,
+                    no_bid=m.get("no_bid", 0) / 100,
+                    no_ask=m.get("no_ask", 0) / 100,
+                    volume=m.get("volume", 0),
+                    open_interest=m.get("open_interest", 0),
+                    close_time=close_time,
+                    series_ticker=m.get("series_ticker", series_ticker),
+                    status=m.get("status", ""),
+                ))
+            return markets
+
+    async def place_order(self, ticker: str, side: str, count: int, price: int) -> dict:
+        if self.config.trading.dry_run:
+            logger.info(f"DRY RUN order: {side} {count}x {ticker} @ {price}c")
+            return {"status": "dry_run"}
+        path = "/portfolio/orders"
+        body = {
+            "ticker": ticker,
+            "action": "buy",
+            "side": side,
+            "count": count,
+            "type": "limit",
+            "yes_price": price if side == "yes" else 100 - price,
+            "no_price": price if side == "no" else 100 - price,
+        }
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                self.BASE_URL + path,
+                headers=self._headers("POST", path),
+                json=body,
+                timeout=10,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def get_positions(self) -> List[dict]:
+        if self.private_key is None:
+            return []
+        path = "/portfolio/positions"
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                self.BASE_URL + path,
+                headers=self._headers("GET", path),
+                timeout=10,
+            )
+            r.raise_for_status()
+            return r.json().get("market_positions", [])
+
 
 class MarketDataFetcher:
     def __init__(self, config: BotConfig):
         self.config = config
         self.client = KalshiClient(config)
-        self._price_history: Dict[str, List[float]] = {}
 
-    async def fetch_active_markets(self, limit: int = 100) -> List[Market]:
+    async def fetch_all_weather_markets(self) -> List[KalshiMarket]:
+        import asyncio
+        tasks = [self.client.get_markets(s) for s in KALSHI_WEATHER_SERIES]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         markets = []
-        async with httpx.AsyncClient(timeout=30) as http:
-            for series_ticker, info in KALSHI_WEATHER_SERIES.items():
-                try:
-                    data = await self.client.get(
-                        http,
-                        "/markets",
-                        params={"series_ticker": series_ticker, "status": "open", "limit": limit},
-                    )
-                    for m in data.get("markets", []):
-                        market = self._parse_market(m, series_ticker)
-                        if market:
-                            markets.append(market)
-                except Exception as e:
-                    logger.warning(f"Failed to fetch {series_ticker}: {e}")
+        for series, result in zip(KALSHI_WEATHER_SERIES, results):
+            if isinstance(result, Exception):
+                logger.warning(f"Failed to fetch {series}: {result}")
+            else:
+                markets.extend(result)
         logger.info(f"Fetched {len(markets)} open Kalshi weather markets")
         return markets
 
-    async def fetch_market_with_books(self, market: Market) -> Market:
-        async with httpx.AsyncClient(timeout=15) as http:
-            try:
-                data = await self.client.get(http, f"/markets/{market.slug}/orderbook")
-                ob_raw = data.get("orderbook", {})
-                bids = [OrderBookLevel(price=p / 100.0, size=s) for p, s in ob_raw.get("yes", [])]
-                asks = [OrderBookLevel(price=p / 100.0, size=s) for p, s in ob_raw.get("no", [])]
-                ob = OrderBook(bids=bids, asks=asks)
-                for o in market.outcomes:
-                    o.order_book = ob
-            except Exception as e:
-                logger.debug(f"Orderbook fetch failed for {market.slug}: {e}")
-        return market
+    async def get_balance(self) -> float:
+        return await self.client.get_balance()
 
-    def _parse_market(self, raw: dict, series_ticker: str) -> Optional[Market]:
-        try:
-            ticker = raw.get("ticker", "")
-            yes_cents = raw.get("yes_bid", 0) or raw.get("last_price", 50)
-            no_cents = 100 - yes_cents
-            yes_price = yes_cents / 100.0
-            no_price = no_cents / 100.0
-            outcomes = [
-                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),
-                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),
-            ]
-            strike = 0.0
-            title = raw.get("title", "") or raw.get("subtitle", "")
-            m = re.search(r"(\d+(?:\.\d+)?)\s*(?:degrees|deg|F)", title, re.IGNORECASE)
-            if m:
-                strike = float(m.group(1))
-            return Market(
-                condition_id=raw.get("event_ticker", series_ticker),
-                question=title,
-                slug=ticker,
-                outcomes=outcomes,
-                volume_24h=float(raw.get("volume", 0) or raw.get("volume_24h", 0) or 0),
-                liquidity=float(raw.get("liquidity", 0) or 0),
-                end_date=raw.get("close_time", ""),
-                active=raw.get("status", "") == "open",
-                tags=["weather", "temperature"],
-                series_ticker=series_ticker,
-                strike=strike,
-            )
-        except Exception as e:
-            logger.debug(f"Failed to parse market {raw.get('ticker')}: {e}")
-            return None
+    async def place_order(self, ticker: str, side: str, count: int, price: int) -> dict:
+        return await self.client.place_order(ticker, side, count, price)
 
-    def record_price(self, token_id: str, price: float):
-        if token_id not in self._price_history:
-            self._price_history[token_id] = []
-        self._price_history[token_id].append(price)
-        if len(self._price_history[token_id]) > 500:
-            self._price_history[token_id] = self._price_history[token_id][-500:]
-
-    def get_price_history(self, token_id: str, lookback: int = 20) -> List[float]:
-        return self._price_history.get(token_id, [])[-lookback:]
-
-    async def close(self):
-        pass
+    async def get_positions(self) -> List[dict]:
+        return await self.client.get_positions()
