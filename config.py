@@ -8,7 +8,7 @@ class KalshiConfig:
     api_key_id: str = ""
     private_key_str: str = ""
     private_key_path: str = ""
-    base_url: str = "https://trading-api.kalshi.com/trade-api/v2"
+    base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
     demo_url: str = "https://demo-api.kalshi.co/trade-api/v2"
     use_demo: bool = False
 
