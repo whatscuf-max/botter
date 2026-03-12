@@ -148,14 +148,14 @@ class KalshiClient:
 
     async def get(self, client: httpx.AsyncClient, path: str, params: dict = None):
         url = self.base_url + path
-        headers = self._headers("GET", path)
+        headers = self._headers("GET", "/trade-api/v2" + path)
         r = await client.get(url, headers=headers, params=params)
         r.raise_for_status()
         return r.json()
 
     async def post(self, client: httpx.AsyncClient, path: str, body: dict = None):
         url = self.base_url + path
-        headers = self._headers("POST", path)
+        headers = self._headers("POST", "/trade-api/v2" + path)
         r = await client.post(url, headers=headers, json=body or {})
         r.raise_for_status()
         return r.json()
@@ -206,9 +206,9 @@ class MarketDataFetcher:
             no_cents = 100 - yes_cents
             yes_price = yes_cents / 100.0
             no_price = no_cents / 100.0
-            outcomes = [
-                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),
-                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),
+            outcomes = [\
+                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),\
+                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),\
             ]
             strike = 0.0
             title = raw.get("title", "") or raw.get("subtitle", "")
