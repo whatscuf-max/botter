@@ -3,6 +3,7 @@
 import base64
 import datetime
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -110,28 +111,47 @@ class KalshiClient:
         self.base_url = config.kalshi.active_url
         self.api_key_id = config.kalshi.api_key_id
         self._private_key = None
+
         if not config.kalshi.api_key_id:
             return
-        # Try raw string key first (KALSHI_PRIVATE_KEY env var)
-        raw_str = getattr(config.kalshi, "private_key_str", "")
-        if raw_str and raw_str.strip():
+
+        # 1) Try loading from KALSHI_PRIVATE_KEY env string
+        raw_str = os.environ.get("KALSHI_PRIVATE_KEY", "").strip()
+        if raw_str:
             try:
-                # Normalize: env vars may have literal \n instead of real newlines
-                pem = raw_str.replace("\\n", "\n").encode()
-                self._private_key = serialization.load_pem_private_key(pem, password=None)
+                # Normalise \n literals to real newlines
+                raw_str = raw_str.replace("\\n", "\n")
+                # Wrap PEM headers if missing
+                if "BEGIN" not in raw_str:
+                    wrapped = (
+                        "-----BEGIN RSA PRIVATE KEY-----\n"
+                        + "\n".join(raw_str[i:i+64] for i in range(0, len(raw_str), 64))
+                        + "\n-----END RSA PRIVATE KEY-----\n"
+                    )
+                else:
+                    wrapped = raw_str
+                self._private_key = serialization.load_pem_private_key(
+                    wrapped.encode(), password=None
+                )
                 logger.info("Loaded Kalshi private key from environment string")
                 return
             except Exception as e:
                 logger.warning(f"Could not parse KALSHI_PRIVATE_KEY string: {e}")
-        # Fall back to .pem file
-        try:
-            with open(config.kalshi.private_key_path, "rb") as f:
-                data = f.read()
-            if data.strip():
-                self._private_key = serialization.load_pem_private_key(data, password=None)
-                logger.info("Loaded Kalshi private key from .pem file")
-        except Exception as e:
-            logger.warning(f"Could not load private key: {e}  (dry run will still work)")
+
+        # 2) Fall back to .pem file
+        pem_path = config.kalshi.private_key_path
+        if pem_path:
+            try:
+                with open(pem_path, "rb") as f:
+                    data = f.read()
+                if data.strip():
+                    self._private_key = serialization.load_pem_private_key(data, password=None)
+                    logger.info(f"Loaded Kalshi private key from file: {pem_path}")
+                    return
+            except Exception as e:
+                logger.warning(f"Could not load private key from file: {e}")
+
+        logger.warning("No private key loaded — authenticated requests will fail")
 
     def _headers(self, method: str, path: str) -> dict:
         if self._private_key is None:
@@ -200,9 +220,9 @@ class MarketDataFetcher:
             no_cents = 100 - yes_cents
             yes_price = yes_cents / 100.0
             no_price = no_cents / 100.0
-            outcomes = [\
-                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),\
-                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),\
+            outcomes = [
+                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),
+                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),
             ]
             strike = 0.0
             title = raw.get("title", "") or raw.get("subtitle", "")
