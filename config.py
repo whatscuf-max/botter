@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 class KalshiConfig:
     api_key_id: str = ""
     private_key_path: str = ""
+    private_key_str: str = ""
     base_url: str = "https://trading-api.kalshi.com/trade-api/v2"
     demo_url: str = "https://demo-api.kalshi.co/trade-api/v2"
     use_demo: bool = False
@@ -43,16 +44,16 @@ class BotConfig:
     @classmethod
     def from_env(cls):
         c = cls()
-        c.kalshi.api_key_id = os.getenv("KALSHI_API_KEY_ID", "")
+        c.kalshi.api_key_id      = os.getenv("KALSHI_API_KEY_ID", "")
+        c.kalshi.private_key_str = os.getenv("KALSHI_PRIVATE_KEY", "")
         c.kalshi.private_key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "kalshi_private_key.pem")
-        c.kalshi.use_demo = os.getenv("KALSHI_USE_DEMO", "false").lower() == "true"
+        c.kalshi.use_demo        = os.getenv("KALSHI_USE_DEMO", "false").lower() == "true"
         c.trading.starting_balance = float(os.getenv("STARTING_BALANCE", "30"))
         c.dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
         return c
 
 # Kalshi temperature series -> NWS station + exact coordinates
 # Settlement: NWS Daily Climatological Report released the following morning
-# IMPORTANT: Kalshi prices are in CENTS (int 1-99), not decimals (0.01-0.99)
 KALSHI_WEATHER_SERIES = {
     "KXHIGHNY":   {"city": "New York City",  "station": "KNYC", "lat": 40.7789,  "lon": -73.9692},
     "KXHIGHCHI":  {"city": "Chicago",        "station": "KMDW", "lat": 41.7868,  "lon": -87.7522},
@@ -73,6 +74,7 @@ KALSHI_WEATHER_SERIES = {
     "KXHIGHOKC":  {"city": "Oklahoma City",  "station": "KOKC", "lat": 35.3931,  "lon": -97.6008},
     "KXHIGHSAT":  {"city": "San Antonio",    "station": "KSAT", "lat": 29.5337,  "lon": -98.4698},
     "KXHIGHAUST": {"city": "Austin",         "station": "KAUS", "lat": 30.1975,  "lon": -97.6664},
+    "KXHIGHMSY":  {"city": "New Orleans",    "station": "KMSY", "lat": 29.9934,  "lon": -90.2580},
 }
 
 STATION_TO_SERIES = {v["station"]: k for k, v in KALSHI_WEATHER_SERIES.items()}
