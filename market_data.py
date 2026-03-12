@@ -32,6 +32,11 @@ def _sign_request(private_key, method: str, path: str) -> dict:
         "Content-Type": "application/json",
     }
 
+def _load_private_key_from_str(key_str: str):
+    """Normalize \\n escapes and load a PEM private key from a string."""
+    key_str = key_str.replace('\\\\n', '\n').replace('\\n', '\n')
+    return serialization.load_pem_private_key(key_str.encode("utf-8"), password=None)
+
 @dataclass
 class OrderBookLevel:
     price: float
@@ -107,11 +112,6 @@ class Market:
 # Alias for backwards compatibility
 KalshiMarket = Market
 
-def _load_private_key_from_str(key_str: str):
-    """Normalize \\n escape sequences in a PEM key string and load it."""
-    key_str = key_str.replace('\\\\n', '\n').replace('\\n', '\n')
-    return serialization.load_pem_private_key(key_str.encode("utf-8"), password=None)
-
 class KalshiClient:
     def __init__(self, config: BotConfig):
         self.config = config
@@ -120,15 +120,24 @@ class KalshiClient:
         self._private_key = None
         # Only load key if we have a real key ID (not dry run placeholder)
         if config.kalshi.api_key_id:
-            try:
-                with open(config.kalshi.private_key_path, "rb") as f:
-                    data = f.read()
-                if data.strip():
-                    key_str = data.decode("utf-8")
-                    key_str = key_str.replace('\\\\n', '\n').replace('\\n', '\n')
-                    self._private_key = serialization.load_pem_private_key(key_str.encode("utf-8"), password=None)
-            except Exception as e:
-                logger.warning(f"Could not load private key: {e}  (dry run will still work)")
+            # First try the key string from .env
+            key_str = getattr(config.kalshi, 'private_key_str', '') or ''
+            if key_str.strip():
+                try:
+                    self._private_key = _load_private_key_from_str(key_str)
+                    logger.info("Private key loaded from environment variable")
+                except Exception as e:
+                    logger.warning(f"Could not parse KALSHI_PRIVATE_KEY string: {e}")
+            # Fall back to .pem file
+            if self._private_key is None:
+                try:
+                    with open(config.kalshi.private_key_path, "rb") as f:
+                        data = f.read()
+                    if data.strip():
+                        self._private_key = _load_private_key_from_str(data.decode("utf-8"))
+                        logger.info("Private key loaded from .pem file")
+                except Exception as e:
+                    logger.warning(f"Could not load private key: {e}  (dry run will still work)")
 
     def _headers(self, method: str, path: str) -> dict:
         if self._private_key is None:
@@ -197,9 +206,9 @@ class MarketDataFetcher:
             no_cents = 100 - yes_cents
             yes_price = yes_cents / 100.0
             no_price = no_cents / 100.0
-            outcomes = [\
-                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),\
-                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),\
+            outcomes = [
+                MarketOutcome(token_id=ticker + "-YES", outcome="Yes", price=yes_price),
+                MarketOutcome(token_id=ticker + "-NO",  outcome="No",  price=no_price),
             ]
             strike = 0.0
             title = raw.get("title", "") or raw.get("subtitle", "")
