@@ -20,6 +20,7 @@ from market_data import MarketDataFetcher
 from strategies import StrategyEngine, is_weather_market, Side as StrategySide
 from executor import TradeExecutor, Side as ExecSide
 from risk_manager import RiskManager
+from weather_strategy import fetch_forecasts_for_kalshi
 
 class RingBufferHandler(logging.Handler):
     def __init__(self, capacity=200):
@@ -74,19 +75,40 @@ class KalshiBot:
         self.running = False
         self.data = MarketDataFetcher(config)
         self._forecasts: dict = {}
+        self._last_forecast_fetch = 0.0
         self.strategy = StrategyEngine(config, self._forecasts)
         self.risk = RiskManager(config)
         self.executor = TradeExecutor(config)
         self._cycle_count = 0
         self._start_time = time.time()
         self._last_report = 0
+        self._pnl_history = []
         self._wx_markets_cache = []
+
+    async def _refresh_forecasts(self):
+        """Fetch weather forecasts every 5 minutes."""
+        now = time.time()
+        if now - self._last_forecast_fetch < 300:
+            return
+        try:
+            forecasts = await fetch_forecasts_for_kalshi()
+            if forecasts:
+                self._forecasts.update(forecasts)
+                self.strategy.update_forecasts(self._forecasts)
+                self._last_forecast_fetch = now
+                logger.info(f"Forecasts refreshed: {len(self._forecasts)} cities loaded")
+            else:
+                logger.warning("Forecast fetch returned empty result")
+        except Exception as e:
+            logger.warning(f"Forecast fetch failed: {e}")
 
     async def start(self):
         self.running = True
         self._start_time = time.time()
         self._print_banner()
         logger.info("Bot starting...")
+        # Fetch forecasts immediately on startup
+        await self._refresh_forecasts()
         try:
             while self.running:
                 await self._cycle()
@@ -110,6 +132,9 @@ class KalshiBot:
             await asyncio.sleep(300)
             return
         try:
+            # Refresh forecasts every 5 min
+            await self._refresh_forecasts()
+
             # Fetch markets
             all_m = await self.data.fetch_active_markets(limit=200)
             wx_m = [m for m in all_m if is_weather_market(m)]
@@ -132,6 +157,13 @@ class KalshiBot:
                         self.data.record_price(o.token_id, o.price)
                         ph[o.token_id] = self.data.get_price_history(o.token_id)
 
+            # Build current prices dict for position updates
+            current_prices = {}
+            for m in all_m:
+                for o in m.outcomes:
+                    if o.token_id:
+                        current_prices[o.token_id] = o.price
+
             # Generate signals
             sigs = []
             for m in all_m:
@@ -140,27 +172,26 @@ class KalshiBot:
 
             if not sigs:
                 if self._cycle_count % 18 == 0:
-                    logger.info(f"No signals | Bal=${self.executor.balance:.2f} | Wx={len(wx_m)}")
+                    logger.info(
+                        f"No signals | Bal=${self.executor.balance:.2f} | "
+                        f"Wx={len(wx_m)} | Forecasts={len(self._forecasts)}"
+                    )
                 return
 
             logger.info(f"Generated {len(sigs)} signals")
 
             # Execute signals
             for s in sigs:
-                # Position limit check
                 if len(self.executor.open_positions) >= tc.max_concurrent_positions:
                     break
 
-                # Confidence check
                 min_conf = getattr(tc, "min_confidence", 0.55)
                 if s.confidence < min_conf:
                     continue
 
-                # Size the trade
                 trade_value = self.executor.balance * tc.max_position_pct
                 contracts = max(1, int(trade_value / (s.yes_price_cents / 100.0)))
 
-                # Skip if not enough balance
                 cost = contracts * (s.yes_price_cents / 100.0)
                 if cost > self.executor.balance * 0.95:
                     logger.debug(f"SKIP (insufficient balance ${cost:.2f}): {s.market.question[:40]}")
@@ -181,14 +212,13 @@ class KalshiBot:
                     )
                 await asyncio.sleep(0.5)
 
-            # Check exits via evaluate_positions_with_data
-            prices = {tok: hist[-1] for tok, hist in ph.items() if hist}
-            closed = await self.executor.evaluate_positions_with_data(
-                prices, "", 0.0, self._forecasts
+            # Update open positions and check exits
+            await self.executor.evaluate_positions_with_data(
+                current_prices,
+                "",
+                0.0,
+                self._forecasts,
             )
-            for pos in closed:
-                self.risk.record_trade_result(pos.pnl)
-                logger.info(f"CLOSED: {pos.market_slug} reason={pos.exit_reason} pnl=${pos.pnl:+.2f}")
 
         except Exception as e:
             logger.error(f"Cycle error: {e}", exc_info=True)
@@ -232,6 +262,7 @@ class KalshiBot:
                 "balance": self.executor.balance,
                 "open_positions": len(self.executor.open_positions),
                 "cycles": self._cycle_count,
+                "forecasts_loaded": len(self._forecasts),
             }
             with open("state.json", "w") as f:
                 json.dump(state, f, indent=2)
@@ -259,7 +290,7 @@ async def main():
         try:
             loop.add_signal_handler(sig, lambda: asyncio.create_task(bot._shutdown()))
         except NotImplementedError:
-            pass  # Windows doesn't support add_signal_handler
+            pass  # Windows
 
     await bot.start()
 
